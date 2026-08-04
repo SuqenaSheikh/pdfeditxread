@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -215,34 +216,88 @@ class PdfOpsService {
   }
 
   /// Cover-and-redraw in-place text edit (FR-14 fallback from the spec).
+  ///
+  /// [lineBounds] are page-space rects from the viewer selection. The original
+  /// glyphs are painted over, then [newText] is drawn into the same area.
   Future<String> replaceTextOnPage({
     required String path,
     required int pageIndexZeroBased,
-    required Rect bounds,
+    required List<Rect> lineBounds,
     required String newText,
     Color coverColor = const Color(0xFFFFFFFF),
-    double fontSize = 12,
   }) async {
+    if (lineBounds.isEmpty) {
+      throw ArgumentError('No text bounds to replace.');
+    }
+
     final doc = PdfDocument(inputBytes: await File(path).readAsBytes());
     try {
+      if (pageIndexZeroBased < 0 ||
+          pageIndexZeroBased >= doc.pages.count) {
+        throw RangeError('Page index out of range: $pageIndexZeroBased');
+      }
+
       final page = doc.pages[pageIndexZeroBased];
       final g = page.graphics;
-      g.drawRectangle(
-        bounds: bounds,
-        brush: PdfSolidBrush(
-          PdfColor(
-            (coverColor.r * 255.0).round().clamp(0, 255),
-            (coverColor.g * 255.0).round().clamp(0, 255),
-            (coverColor.b * 255.0).round().clamp(0, 255),
-          ),
+
+      // Union all selected lines, with a little padding so descenders/edges
+      // of the original glyphs are fully covered.
+      var cover = lineBounds.first;
+      for (final rect in lineBounds.skip(1)) {
+        cover = cover.expandToInclude(rect);
+      }
+      cover = Rect.fromLTRB(
+        cover.left - 1,
+        cover.top - 1,
+        cover.right + 2,
+        cover.bottom + 2,
+      );
+
+      final avgLineHeight = lineBounds
+              .map((r) => r.height)
+              .fold<double>(0, (a, b) => a + b) /
+          lineBounds.length;
+
+      // Using the full line height as font size makes Syncfusion's layouter
+      // clip the glyphs (lineLimit defaults to true), so the cover stays and
+      // the replacement string never appears. Size the font under the line box.
+      final fontSize = (avgLineHeight * 0.72).clamp(7.0, 28.0);
+      final font = PdfStandardFont(PdfFontFamily.helvetica, fontSize);
+      final brush = PdfSolidBrush(PdfColor(28, 28, 30));
+      final coverBrush = PdfSolidBrush(
+        PdfColor(
+          (coverColor.r * 255.0).round().clamp(0, 255),
+          (coverColor.g * 255.0).round().clamp(0, 255),
+          (coverColor.b * 255.0).round().clamp(0, 255),
         ),
       );
+
+      g.drawRectangle(bounds: cover, brush: coverBrush);
+
+      // Give the string a slightly taller box than the cover so ascent/descent
+      // fit, and disable clipping so short boxes still paint.
+      final textBounds = Rect.fromLTWH(
+        cover.left,
+        cover.top,
+        math.max(cover.width, 8),
+        math.max(cover.height + fontSize * 0.35, fontSize * 1.2),
+      );
+
+      final format = PdfStringFormat(
+        alignment: PdfTextAlignment.left,
+        lineAlignment: PdfVerticalAlignment.top,
+        wordWrap: PdfWordWrapType.word,
+      )..lineLimit = false
+        ..noClip = true;
+
       g.drawString(
         newText,
-        PdfStandardFont(PdfFontFamily.helvetica, fontSize),
-        bounds: bounds,
-        brush: PdfSolidBrush(PdfColor(28, 28, 30)),
+        font,
+        bounds: textBounds,
+        brush: brush,
+        format: format,
       );
+
       final bytes = Uint8List.fromList(doc.saveSync());
       return _writeOutput(
         bytes,

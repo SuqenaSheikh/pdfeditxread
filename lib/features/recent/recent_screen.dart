@@ -16,6 +16,9 @@ class RecentScreen extends ConsumerWidget {
     WidgetRef ref,
     PdfDocumentItem doc,
   ) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!context.mounted) return;
     await ref.read(libraryProvider.notifier).openTracked(doc);
     if (!context.mounted) return;
     await Navigator.of(context).push(
@@ -23,7 +26,8 @@ class RecentScreen extends ConsumerWidget {
     );
     if (!context.mounted) return;
     ref.read(libraryProvider.notifier).refresh();
-    await ref.read(adsServiceProvider).showInterstitialAtBreakpoint();
+    // TODO(ads): re-enable interstitial after reader close.
+    // await ref.read(adsServiceProvider).showInterstitialAtBreakpoint();
   }
 
   @override

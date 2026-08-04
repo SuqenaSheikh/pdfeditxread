@@ -22,6 +22,9 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   String _query = '';
 
   Future<void> _open(PdfDocumentItem doc) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted) return;
     await ref.read(libraryProvider.notifier).openTracked(doc);
     if (!mounted) return;
     await Navigator.of(context).push(
@@ -29,7 +32,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     );
     if (!mounted) return;
     ref.read(libraryProvider.notifier).refresh();
-    await ref.read(adsServiceProvider).showInterstitialAtBreakpoint();
+    // TODO(ads): re-enable interstitial after reader close.
+    // await ref.read(adsServiceProvider).showInterstitialAtBreakpoint();
   }
 
   Future<void> _import() async {
@@ -112,7 +116,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ),
             ),
           ),
-          const AdBannerSlot(),
+          const AdBannerSlot(), // TODO(ads): temporarily inactive until AdsService.init is re-enabled
           Expanded(
             child: filtered.isEmpty
                 ? EmptyState(

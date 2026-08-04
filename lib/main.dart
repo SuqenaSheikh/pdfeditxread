@@ -30,15 +30,15 @@ Future<void> main() async {
   await settingsRepo.save(settings);
 
   final adsService = AdsService();
-  await adsService.init(
-    isPro: settings.isPro,
-    firstLaunch: settings.launchCount <= 1,
-  );
-  if (settings.launchCount > 1) {
-    // ignore: unawaited_futures
-    adsService.showAppOpenIfAllowed();
-  }
-  adsService.markFirstLaunchDone();
+  // TODO(ads): re-enable AdMob init / app-open ads later.
+  // await adsService.init(
+  //   isPro: settings.isPro,
+  //   firstLaunch: settings.launchCount <= 1,
+  // );
+  // if (settings.launchCount > 1) {
+  //   adsService.showAppOpenIfAllowed();
+  // }
+  // adsService.markFirstLaunchDone();
 
   runApp(
     ProviderScope(

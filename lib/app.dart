@@ -22,10 +22,9 @@ class FolioApp extends ConsumerWidget {
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: themeMode,
-      builder: (context, child) => OpenIntentListener(
-        child: child ?? const SizedBox.shrink(),
-      ),
-      home: onboarded ? const HomeShell() : const OnboardingScreen(),
+      home: onboarded
+          ? const OpenIntentListener(child: HomeShell())
+          : const OnboardingScreen(),
     );
   }
 }

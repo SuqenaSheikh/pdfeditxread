@@ -16,7 +16,7 @@ import '../../providers/app_providers.dart';
 import '../pro/pro_paywall_screen.dart';
 import 'pen_overlay.dart';
 
-enum _AnnotTool { none, highlight, underline, strikethrough, pen, note }
+enum _AnnotTool { none, highlight, underline, strikethrough, pen }
 
 class ReaderScreen extends ConsumerStatefulWidget {
   const ReaderScreen({super.key, required this.document});
@@ -28,23 +28,22 @@ class ReaderScreen extends ConsumerStatefulWidget {
 }
 
 class _ReaderScreenState extends ConsumerState<ReaderScreen> {
-  final _pdfKey = GlobalKey<SfPdfViewerState>();
+  GlobalKey<SfPdfViewerState> _pdfKey = GlobalKey<SfPdfViewerState>();
   final _controller = PdfViewerController();
   final _searchController = TextEditingController();
   final _tts = FlutterTts();
 
-  bool _chromeVisible = true;
-  bool _searchOpen = false;
   bool _ttsPlaying = false;
   bool _saving = false;
+  bool _searching = false;
   _AnnotTool _tool = _AnnotTool.none;
   Color _markupColor = const Color(0xFFF2B705);
   PdfTextSearchResult? _searchResult;
   int _currentPage = 1;
+  int _pageCount = 0;
   late bool _nightMode;
   late PdfPageLayoutMode _layoutMode;
   final List<PenStroke> _penStrokes = [];
-  final _viewerBoxKey = GlobalKey();
 
   @override
   void initState() {
@@ -54,16 +53,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     _layoutMode = settings.readerLayout == ReaderLayoutMode.pageByPage
         ? PdfPageLayoutMode.single
         : PdfPageLayoutMode.continuous;
-    _currentPage = widget.document.lastPage;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_currentPage > 1) _controller.jumpToPage(_currentPage);
-    });
+    _currentPage = widget.document.lastPage.clamp(1, 999999);
   }
 
   @override
   void dispose() {
     _searchController.dispose();
-    _controller.dispose();
     _tts.stop();
     super.dispose();
   }
@@ -82,9 +77,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       await File(widget.document.path).writeAsBytes(bytes, flush: true);
 
       if (_penStrokes.isNotEmpty) {
-        final box =
-            _viewerBoxKey.currentContext?.findRenderObject() as RenderBox?;
-        final size = box?.size ?? MediaQuery.sizeOf(context);
+        final size = MediaQuery.sizeOf(context);
         await ref.read(pdfOpsServiceProvider).bakePenStrokes(
               path: widget.document.path,
               pageOneBased: _currentPage,
@@ -142,8 +135,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     HapticFeedback.selectionClick();
   }
 
-  Future<void> _addStickyNote(PdfGestureDetails details) async {
-    if (details.pageNumber < 1) return;
+  Future<void> _addStickyNote() async {
     final noteController = TextEditingController();
     final text = await showDialog<String>(
       context: context,
@@ -170,9 +162,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     if (text == null || text.isEmpty) return;
 
     final annotation = StickyNoteAnnotation(
-      pageNumber: details.pageNumber,
+      pageNumber: _currentPage,
       text: text,
-      position: details.pagePosition,
+      position: const Offset(40, 40),
       icon: PdfStickyNoteIcon.comment,
     );
     annotation.color = AppColors.accentSecondary;
@@ -341,19 +333,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
     if (next == null || next == selected) return;
 
-    // Cover-and-redraw fallback (spec section 5.4) using page text bounds.
     try {
-      if (lines.isEmpty) {
-        throw StateError('Could not resolve text bounds.');
-      }
-      final bounds = lines.first.bounds;
-      final pageIndex = math.max(0, lines.first.pageNumber - 1);
+      final pageNumber = lines.first.pageNumber;
+      final pageIndex = math.max(0, pageNumber - 1);
       final out = await ref.read(pdfOpsServiceProvider).replaceTextOnPage(
             path: widget.document.path,
             pageIndexZeroBased: pageIndex,
-            bounds: bounds,
+            lineBounds: lines.map((l) => l.bounds).toList(growable: false),
             newText: next,
-            fontSize: bounds.height.clamp(8, 28),
           );
       final baseName = widget.document.name.replaceAll('.pdf', '');
       final item = await ref.read(libraryProvider.notifier).importPath(
@@ -373,63 +360,174 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     }
   }
 
-  Widget _buildViewer() {
-    final viewer = SfPdfViewer.file(
-      File(widget.document.path),
-      key: _pdfKey,
-      controller: _controller,
-      pageLayoutMode: _layoutMode,
-      canShowScrollHead: true,
-      canShowPaginationDialog: true,
-      canShowPasswordDialog: true,
-      enableDoubleTapZooming: true,
-      enableTextSelection: true,
-      onPageChanged: (details) {
-        setState(() => _currentPage = details.newPageNumber);
-        _persistPage();
+  void _showAnnotSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Markup', style: Theme.of(ctx).textTheme.titleLarge),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    ActionChip(
+                      label: const Text('Highlight'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        setState(() => _tool = _AnnotTool.highlight);
+                        _applyMarkup();
+                      },
+                    ),
+                    ActionChip(
+                      label: const Text('Underline'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        setState(() => _tool = _AnnotTool.underline);
+                        _applyMarkup();
+                      },
+                    ),
+                    ActionChip(
+                      label: const Text('Strike'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        setState(() => _tool = _AnnotTool.strikethrough);
+                        _applyMarkup();
+                      },
+                    ),
+                    ActionChip(
+                      label: const Text('Note'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _addStickyNote();
+                      },
+                    ),
+                    ActionChip(
+                      label: Text(_tool == _AnnotTool.pen ? 'Exit pen' : 'Pen'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        setState(() {
+                          _tool = _tool == _AnnotTool.pen
+                              ? _AnnotTool.none
+                              : _AnnotTool.pen;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('Highlight color', style: Theme.of(ctx).textTheme.bodySmall),
+                const SizedBox(height: 8),
+                Row(
+                  children: AppConstants.highlightColors.map((value) {
+                    final color = Color(value);
+                    final selected = color.toARGB32() == _markupColor.toARGB32();
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() => _markupColor = color);
+                        Navigator.pop(ctx);
+                      },
+                      child: Container(
+                        width: 28,
+                        height: 28,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: selected
+                                ? Theme.of(ctx).colorScheme.primary
+                                : Theme.of(ctx).colorScheme.outline,
+                            width: selected ? 2 : 1,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+        );
       },
-      onTap: (details) {
-        if (_tool == _AnnotTool.note) {
-          _addStickyNote(details);
-          return;
-        }
-        setState(() => _chromeVisible = !_chromeVisible);
-      },
-      onAnnotationAdded: (_) => HapticFeedback.selectionClick(),
-    );
-
-    if (!_nightMode) return viewer;
-
-    return ColorFiltered(
-      colorFilter: const ColorFilter.matrix(<double>[
-        -1, 0, 0, 0, 255,
-        0, -1, 0, 0, 255,
-        0, 0, -1, 0, 255,
-        0, 0, 0, 1, 0,
-      ]),
-      child: viewer,
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     final bookmarked = ref
         .read(libraryServiceProvider)
         .hasPageBookmark(widget.document.id, _currentPage);
+    final file = File(widget.document.path);
 
-    return Scaffold(
-      backgroundColor: _nightMode ? Colors.black : AppColors.pdfPaper,
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: KeyedSubtree(
-              key: _viewerBoxKey,
-              child: _buildViewer(),
+    // Keep the viewer as the Scaffold body (no Stack overlays on top of it).
+    // Floating Stack layers were leaving Syncfusion page tiles unpainted on
+    // some MIUI devices even after onDocumentLoaded fired.
+    Widget viewer = SfPdfViewer.file(
+      file,
+      key: _pdfKey,
+      controller: _controller,
+      pageLayoutMode: _layoutMode,
+      initialPageNumber: _currentPage,
+      canShowScrollHead: true,
+      canShowPaginationDialog: true,
+      canShowPasswordDialog: true,
+      enableDoubleTapZooming: true,
+      enableTextSelection: true,
+      onDocumentLoaded: (details) {
+        debugPrint(
+          'PDF loaded: ${details.document.pages.count} pages from ${widget.document.path}',
+        );
+        if (!mounted) return;
+        setState(() {
+          _pageCount = details.document.pages.count;
+          _currentPage = _controller.pageNumber;
+        });
+      },
+      onDocumentLoadFailed: (details) {
+        debugPrint('PDF load failed: ${details.error} — ${details.description}');
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              details.description.isNotEmpty
+                  ? details.description
+                  : details.error,
             ),
           ),
+        );
+      },
+      onPageChanged: (details) {
+        setState(() => _currentPage = details.newPageNumber);
+        _persistPage();
+      },
+      onAnnotationAdded: (_) => HapticFeedback.selectionClick(),
+    );
+
+    if (_nightMode) {
+      viewer = ColorFiltered(
+        colorFilter: const ColorFilter.matrix(<double>[
+          -1, 0, 0, 0, 255,
+          0, -1, 0, 0, 255,
+          0, 0, -1, 0, 255,
+          0, 0, 0, 1, 0,
+        ]),
+        child: viewer,
+      );
+    }
+
+    if (_tool == _AnnotTool.pen) {
+      viewer = Stack(
+        fit: StackFit.expand,
+        children: [
+          viewer,
           PenOverlay(
-            enabled: _tool == _AnnotTool.pen,
+            enabled: true,
             color: _markupColor,
             strokes: _penStrokes,
             onStrokesChanged: (strokes) {
@@ -441,471 +539,166 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               HapticFeedback.selectionClick();
             },
           ),
-          if (_chromeVisible)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: _TopChrome(
-                title: widget.document.name,
-                pageLabel: '$_currentPage',
-                bookmarked: bookmarked,
-                saving: _saving,
-                nightMode: _nightMode,
-                continuous: _layoutMode == PdfPageLayoutMode.continuous,
-                searchOpen: _searchOpen,
-                searchController: _searchController,
-                searchResult: _searchResult,
-                onBack: () => Navigator.pop(context),
-                onSave: _saveDocument,
-                onShare: () =>
-                    ref.read(libraryServiceProvider).share(widget.document),
-                onToggleBookmark: _toggleBookmark,
-                onBookmarks: _showBookmarksSheet,
-                onToggleNight: () {
+        ],
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFE8E6E1),
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.document.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              _pageCount > 0
+                  ? 'Page $_currentPage of $_pageCount'
+                  : 'Page $_currentPage',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        actions: [
+          if (_saving)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          else
+            IconButton(
+              tooltip: 'Save',
+              onPressed: _saveDocument,
+              icon: const Icon(PhosphorIconsRegular.floppyDisk),
+            ),
+          IconButton(
+            tooltip: 'Search',
+            onPressed: () => setState(() => _searching = !_searching),
+            icon: const Icon(PhosphorIconsRegular.magnifyingGlass),
+          ),
+          IconButton(
+            tooltip: 'Markup',
+            onPressed: _showAnnotSheet,
+            icon: const Icon(PhosphorIconsRegular.highlighterCircle),
+          ),
+          PopupMenuButton<String>(
+            onSelected: (value) async {
+              switch (value) {
+                case 'bookmark':
+                  await _toggleBookmark();
+                case 'bookmarks':
+                  await _showBookmarksSheet();
+                case 'night':
                   setState(() => _nightMode = !_nightMode);
-                  ref
+                  await ref
                       .read(settingsProvider.notifier)
                       .setNightMode(_nightMode);
-                },
-                onToggleLayout: () {
+                case 'layout':
                   setState(() {
                     _layoutMode =
                         _layoutMode == PdfPageLayoutMode.continuous
                             ? PdfPageLayoutMode.single
                             : PdfPageLayoutMode.continuous;
+                    _pdfKey = GlobalKey<SfPdfViewerState>();
                   });
-                  ref.read(settingsProvider.notifier).setReaderLayout(
+                  await ref.read(settingsProvider.notifier).setReaderLayout(
                         _layoutMode == PdfPageLayoutMode.continuous
                             ? ReaderLayoutMode.continuous
                             : ReaderLayoutMode.pageByPage,
                       );
-                },
-                onToggleSearch: () {
-                  setState(() {
-                    _searchOpen = !_searchOpen;
-                    if (!_searchOpen) {
-                      _searchResult?.clear();
-                      _searchResult = null;
-                      _searchController.clear();
-                    }
-                  });
-                },
-                onSearch: _runSearch,
-                onSearchNext: () => _searchResult?.nextInstance(),
-                onSearchPrev: () => _searchResult?.previousInstance(),
-                onTts: _toggleTts,
-                ttsPlaying: _ttsPlaying,
-                onEditText: _editTextInPlace,
-              ),
-            ),
-          if (_chromeVisible)
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 16,
-              child: _BottomTools(
-                tool: _tool,
-                markupColor: _markupColor,
-                onToolSelected: (t) {
-                  setState(() => _tool = t);
-                  if (t == _AnnotTool.highlight ||
-                      t == _AnnotTool.underline ||
-                      t == _AnnotTool.strikethrough) {
-                    _applyMarkup();
-                  }
-                },
-                onColorSelected: (c) => setState(() => _markupColor = c),
-              ),
-            ),
-          if (_tool == _AnnotTool.pen)
-            Positioned(
-              right: 16,
-              bottom: 96,
-              child: Material(
-                color: colors.surface,
-                borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  child: Text(
-                    'Draw freely, then tap Save',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
+                case 'tts':
+                  await _toggleTts();
+                case 'edit':
+                  await _editTextInPlace();
+                case 'share':
+                  await ref
+                      .read(libraryServiceProvider)
+                      .share(widget.document);
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'bookmark',
+                child: Text(
+                  bookmarked ? 'Remove page bookmark' : 'Bookmark page',
                 ),
               ),
-            ),
+              const PopupMenuItem(
+                value: 'bookmarks',
+                child: Text('All bookmarks / outline'),
+              ),
+              PopupMenuItem(
+                value: 'night',
+                child: Text(_nightMode ? 'Exit night mode' : 'Night mode'),
+              ),
+              PopupMenuItem(
+                value: 'layout',
+                child: Text(
+                  _layoutMode == PdfPageLayoutMode.continuous
+                      ? 'Page by page'
+                      : 'Continuous scroll',
+                ),
+              ),
+              PopupMenuItem(
+                value: 'tts',
+                child: Text(_ttsPlaying ? 'Stop reading aloud' : 'Read aloud'),
+              ),
+              const PopupMenuItem(
+                value: 'edit',
+                child: Text('Edit selected text'),
+              ),
+              const PopupMenuItem(
+                value: 'share',
+                child: Text('Share'),
+              ),
+            ],
+          ),
         ],
-      ),
-    );
-  }
-}
-
-class _TopChrome extends StatelessWidget {
-  const _TopChrome({
-    required this.title,
-    required this.pageLabel,
-    required this.bookmarked,
-    required this.saving,
-    required this.nightMode,
-    required this.continuous,
-    required this.searchOpen,
-    required this.searchController,
-    required this.searchResult,
-    required this.onBack,
-    required this.onSave,
-    required this.onShare,
-    required this.onToggleBookmark,
-    required this.onBookmarks,
-    required this.onToggleNight,
-    required this.onToggleLayout,
-    required this.onToggleSearch,
-    required this.onSearch,
-    required this.onSearchNext,
-    required this.onSearchPrev,
-    required this.onTts,
-    required this.ttsPlaying,
-    required this.onEditText,
-  });
-
-  final String title;
-  final String pageLabel;
-  final bool bookmarked;
-  final bool saving;
-  final bool nightMode;
-  final bool continuous;
-  final bool searchOpen;
-  final TextEditingController searchController;
-  final PdfTextSearchResult? searchResult;
-  final VoidCallback onBack;
-  final VoidCallback onSave;
-  final VoidCallback onShare;
-  final VoidCallback onToggleBookmark;
-  final VoidCallback onBookmarks;
-  final VoidCallback onToggleNight;
-  final VoidCallback onToggleLayout;
-  final VoidCallback onToggleSearch;
-  final ValueChanged<String> onSearch;
-  final VoidCallback onSearchNext;
-  final VoidCallback onSearchPrev;
-  final VoidCallback onTts;
-  final bool ttsPlaying;
-  final VoidCallback onEditText;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: colors.surface.withValues(alpha: 0.96),
-      child: SafeArea(
-        bottom: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                IconButton(
-                  onPressed: onBack,
-                  icon: const Icon(PhosphorIconsRegular.arrowLeft),
-                ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+        bottom: _searching
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(56),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                  child: Row(
                     children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium,
+                      Expanded(
+                        child: TextField(
+                          controller: _searchController,
+                          decoration: const InputDecoration(
+                            hintText: 'Find in document',
+                            isDense: true,
+                          ),
+                          onSubmitted: _runSearch,
+                        ),
                       ),
-                      Text(
-                        'Page $pageLabel',
-                        style: Theme.of(context).textTheme.bodySmall,
+                      IconButton(
+                        onPressed: () => _runSearch(_searchController.text),
+                        icon: const Icon(PhosphorIconsRegular.magnifyingGlass),
+                      ),
+                      IconButton(
+                        onPressed: () => _searchResult?.previousInstance(),
+                        icon: const Icon(PhosphorIconsRegular.caretUp),
+                      ),
+                      IconButton(
+                        onPressed: () => _searchResult?.nextInstance(),
+                        icon: const Icon(PhosphorIconsRegular.caretDown),
                       ),
                     ],
                   ),
                 ),
-                if (saving)
-                  const Padding(
-                    padding: EdgeInsets.only(right: 8),
-                    child: SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  )
-                else
-                  IconButton(
-                    tooltip: 'Save',
-                    onPressed: onSave,
-                    icon: const Icon(PhosphorIconsRegular.floppyDisk),
-                  ),
-                IconButton(
-                  tooltip: 'Share',
-                  onPressed: onShare,
-                  icon: const Icon(PhosphorIconsRegular.shareNetwork),
-                ),
-                PopupMenuButton<String>(
-                  onSelected: (value) {
-                    switch (value) {
-                      case 'bookmark':
-                        onToggleBookmark();
-                      case 'bookmarks':
-                        onBookmarks();
-                      case 'night':
-                        onToggleNight();
-                      case 'layout':
-                        onToggleLayout();
-                      case 'search':
-                        onToggleSearch();
-                      case 'tts':
-                        onTts();
-                      case 'edit':
-                        onEditText();
-                    }
-                  },
-                  itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'bookmark',
-                      child: Text(
-                        bookmarked ? 'Remove page bookmark' : 'Bookmark page',
-                      ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'bookmarks',
-                      child: Text('All bookmarks / outline'),
-                    ),
-                    PopupMenuItem(
-                      value: 'night',
-                      child: Text(nightMode ? 'Exit night mode' : 'Night mode'),
-                    ),
-                    PopupMenuItem(
-                      value: 'layout',
-                      child: Text(
-                        continuous ? 'Page by page' : 'Continuous scroll',
-                      ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'search',
-                      child: Text('Search in file'),
-                    ),
-                    PopupMenuItem(
-                      value: 'tts',
-                      child: Text(ttsPlaying ? 'Stop reading aloud' : 'Read aloud'),
-                    ),
-                    const PopupMenuItem(
-                      value: 'edit',
-                      child: Text('Edit selected text'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            if (searchOpen)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: searchController,
-                        autofocus: true,
-                        decoration: const InputDecoration(
-                          hintText: 'Find in document',
-                          isDense: true,
-                        ),
-                        onSubmitted: onSearch,
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => onSearch(searchController.text),
-                      icon: const Icon(PhosphorIconsRegular.magnifyingGlass),
-                    ),
-                    IconButton(
-                      onPressed: onSearchPrev,
-                      icon: const Icon(PhosphorIconsRegular.caretUp),
-                    ),
-                    IconButton(
-                      onPressed: onSearchNext,
-                      icon: const Icon(PhosphorIconsRegular.caretDown),
-                    ),
-                    if (searchResult != null)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 4),
-                        child: Text(
-                          '${searchResult!.currentInstanceIndex}/${searchResult!.totalInstanceCount}',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            Divider(height: 1, color: colors.outline),
-          ],
-        ),
+              )
+            : null,
       ),
-    );
-  }
-}
-
-class _BottomTools extends StatelessWidget {
-  const _BottomTools({
-    required this.tool,
-    required this.markupColor,
-    required this.onToolSelected,
-    required this.onColorSelected,
-  });
-
-  final _AnnotTool tool;
-  final Color markupColor;
-  final ValueChanged<_AnnotTool> onToolSelected;
-  final ValueChanged<Color> onColorSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (tool == _AnnotTool.highlight ||
-            tool == _AnnotTool.underline ||
-            tool == _AnnotTool.strikethrough)
-          Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: colors.surface,
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: colors.outline),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: AppConstants.highlightColors.map((value) {
-                final color = Color(value);
-                final selected = color.toARGB32() == markupColor.toARGB32();
-                return GestureDetector(
-                  onTap: () => onColorSelected(color),
-                  child: Container(
-                    width: 22,
-                    height: 22,
-                    margin: const EdgeInsets.symmetric(horizontal: 4),
-                    decoration: BoxDecoration(
-                      color: color,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: selected ? colors.primary : colors.outline,
-                        width: selected ? 2 : 1,
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          decoration: BoxDecoration(
-            color: colors.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: colors.outline),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.08),
-                blurRadius: 14,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _ToolBtn(
-                icon: PhosphorIconsRegular.highlighterCircle,
-                label: 'Highlight',
-                selected: tool == _AnnotTool.highlight,
-                onTap: () => onToolSelected(_AnnotTool.highlight),
-              ),
-              _ToolBtn(
-                icon: PhosphorIconsRegular.textUnderline,
-                label: 'Underline',
-                selected: tool == _AnnotTool.underline,
-                onTap: () => onToolSelected(_AnnotTool.underline),
-              ),
-              _ToolBtn(
-                icon: PhosphorIconsRegular.textStrikethrough,
-                label: 'Strike',
-                selected: tool == _AnnotTool.strikethrough,
-                onTap: () => onToolSelected(_AnnotTool.strikethrough),
-              ),
-              _ToolBtn(
-                icon: PhosphorIconsRegular.pencil,
-                label: 'Pen',
-                selected: tool == _AnnotTool.pen,
-                onTap: () => onToolSelected(_AnnotTool.pen),
-              ),
-              _ToolBtn(
-                icon: PhosphorIconsRegular.noteBlank,
-                label: 'Note',
-                selected: tool == _AnnotTool.note,
-                onTap: () => onToolSelected(_AnnotTool.note),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ToolBtn extends StatelessWidget {
-  const _ToolBtn({
-    required this.icon,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 20,
-              color: selected ? colors.primary : colors.onSurface.withValues(alpha: 0.65),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                color: selected
-                    ? colors.primary
-                    : colors.onSurface.withValues(alpha: 0.65),
-              ),
-            ),
-          ],
-        ),
-      ),
+      body: viewer,
     );
   }
 }
