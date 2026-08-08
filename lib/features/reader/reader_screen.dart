@@ -15,6 +15,8 @@ import '../../data/models/pdf_document_item.dart';
 import '../../providers/app_providers.dart';
 import '../pro/pro_paywall_screen.dart';
 import 'pen_overlay.dart';
+import 'pdf_canvas_edit_screen.dart';
+import 'selection_context_menu.dart';
 
 enum _AnnotTool { none, highlight, underline, strikethrough, pen }
 
@@ -45,6 +47,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   late PdfPageLayoutMode _layoutMode;
   final List<PenStroke> _penStrokes = [];
 
+  OverlayEntry? _selectionMenuEntry;
+
   @override
   void initState() {
     super.initState();
@@ -58,9 +62,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   @override
   void dispose() {
+    _removeSelectionMenu();
     _searchController.dispose();
     _tts.stop();
     super.dispose();
+  }
+
+  void _removeSelectionMenu() {
+    _selectionMenuEntry?.remove();
+    _selectionMenuEntry?.dispose();
+    _selectionMenuEntry = null;
+  }
+
+  void _dismissSelectionUi() {
+    _removeSelectionMenu();
+    _controller.clearSelection();
   }
 
   Future<void> _persistPage() async {
@@ -110,7 +126,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     }
   }
 
-  void _applyMarkup() {
+  void _applyMarkup(_AnnotTool tool) {
     final lines = _pdfKey.currentState?.getSelectedTextLines() ?? const [];
     if (lines.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -120,19 +136,91 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     }
 
     late final Annotation annotation;
-    switch (_tool) {
+    switch (tool) {
       case _AnnotTool.highlight:
         annotation = HighlightAnnotation(textBoundsCollection: lines);
       case _AnnotTool.underline:
         annotation = UnderlineAnnotation(textBoundsCollection: lines);
       case _AnnotTool.strikethrough:
         annotation = StrikethroughAnnotation(textBoundsCollection: lines);
-      default:
+      case _AnnotTool.none:
+      case _AnnotTool.pen:
         return;
     }
     annotation.color = _markupColor;
     _controller.addAnnotation(annotation);
     HapticFeedback.selectionClick();
+    _dismissSelectionUi();
+  }
+
+  void _applySquiggly() {
+    final lines = _pdfKey.currentState?.getSelectedTextLines() ?? const [];
+    if (lines.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select some text first.')),
+      );
+      return;
+    }
+    final annotation = SquigglyAnnotation(textBoundsCollection: lines);
+    annotation.color = _markupColor;
+    _controller.addAnnotation(annotation);
+    HapticFeedback.selectionClick();
+    _dismissSelectionUi();
+  }
+
+  void _showSelectionMenu(PdfTextSelectionChangedDetails details) {
+    _removeSelectionMenu();
+    final region = details.globalSelectedRegion;
+    if (region == null || !mounted) return;
+
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final media = MediaQuery.sizeOf(context);
+    const menuWidth = 188.0;
+    const menuHeight = 280.0;
+
+    var left = region.center.dx - menuWidth / 2;
+    var top = region.top - menuHeight - 8;
+    if (top < 48) top = region.bottom + 8;
+    left = left.clamp(8.0, media.width - menuWidth - 8);
+    top = top.clamp(8.0, media.height - menuHeight - 8);
+
+    _selectionMenuEntry = OverlayEntry(
+      builder: (ctx) => Positioned(
+        left: left,
+        top: top,
+        child: SelectionContextMenu(
+          onAction: (action) => _onSelectionMenuAction(action, details),
+        ),
+      ),
+    );
+    overlay.insert(_selectionMenuEntry!);
+  }
+
+  Future<void> _onSelectionMenuAction(
+    String action,
+    PdfTextSelectionChangedDetails details,
+  ) async {
+    switch (action) {
+      case 'Copy':
+        final text = details.selectedText ?? '';
+        await Clipboard.setData(ClipboardData(text: text));
+        _dismissSelectionUi();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Copied')),
+          );
+        }
+      case 'Highlight':
+        _applyMarkup(_AnnotTool.highlight);
+      case 'Underline':
+        _applyMarkup(_AnnotTool.underline);
+      case 'Strikethrough':
+        _applyMarkup(_AnnotTool.strikethrough);
+      case 'Squiggly':
+        _applySquiggly();
+      case 'Edit':
+        await _editTextInPlace();
+    }
   }
 
   Future<void> _addStickyNote() async {
@@ -290,74 +378,32 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     });
   }
 
-  Future<void> _editTextInPlace() async {
+  Future<void> _openCanvasEdit() async {
+    _removeSelectionMenu();
     final isPro = await requirePro(
       context,
       ref,
-      featureLabel: 'In-place text editing is part of Folio Pro.',
+      featureLabel: 'PDF text editing is part of Folio Pro.',
     );
     if (!isPro || !mounted) return;
 
-    final lines = _pdfKey.currentState?.getSelectedTextLines() ?? const [];
-    final selected = lines.map((l) => l.text).join(' ').trim();
-    if (selected.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Select the text you want to replace first.'),
+    final item = await Navigator.of(context).push<PdfDocumentItem>(
+      MaterialPageRoute(
+        builder: (_) => PdfCanvasEditScreen(
+          document: widget.document,
+          initialPageIndex: math.max(0, _currentPage - 1),
         ),
-      );
-      return;
-    }
-
-    final controller = TextEditingController(text: selected);
-    final next = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Edit text'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLines: 3,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, controller.text),
-            child: const Text('Apply'),
-          ),
-        ],
       ),
     );
-    if (next == null || next == selected) return;
+    if (item == null || !mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => ReaderScreen(document: item)),
+    );
+  }
 
-    try {
-      final pageNumber = lines.first.pageNumber;
-      final pageIndex = math.max(0, pageNumber - 1);
-      final out = await ref.read(pdfOpsServiceProvider).replaceTextOnPage(
-            path: widget.document.path,
-            pageIndexZeroBased: pageIndex,
-            lineBounds: lines.map((l) => l.bounds).toList(growable: false),
-            newText: next,
-          );
-      final baseName = widget.document.name.replaceAll('.pdf', '');
-      final item = await ref.read(libraryProvider.notifier).importPath(
-            out,
-            name: '${baseName}_edited.pdf',
-          );
-      if (!mounted) return;
-      HapticFeedback.mediumImpact();
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => ReaderScreen(document: item)),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not edit text: $e')),
-      );
-    }
+  Future<void> _editTextInPlace() async {
+    // Prefer Canva-style editor (sticky font sizes, deferred save).
+    await _openCanvasEdit();
   }
 
   void _showAnnotSheet() {
@@ -381,7 +427,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       onPressed: () {
                         Navigator.pop(ctx);
                         setState(() => _tool = _AnnotTool.highlight);
-                        _applyMarkup();
+                        _applyMarkup(_AnnotTool.highlight);
                       },
                     ),
                     ActionChip(
@@ -389,7 +435,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       onPressed: () {
                         Navigator.pop(ctx);
                         setState(() => _tool = _AnnotTool.underline);
-                        _applyMarkup();
+                        _applyMarkup(_AnnotTool.underline);
                       },
                     ),
                     ActionChip(
@@ -397,7 +443,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       onPressed: () {
                         Navigator.pop(ctx);
                         setState(() => _tool = _AnnotTool.strikethrough);
-                        _applyMarkup();
+                        _applyMarkup(_AnnotTool.strikethrough);
+                      },
+                    ),
+                    ActionChip(
+                      label: const Text('Squiggly'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _applySquiggly();
                       },
                     ),
                     ActionChip(
@@ -479,6 +532,24 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       canShowPasswordDialog: true,
       enableDoubleTapZooming: true,
       enableTextSelection: true,
+      canShowTextSelectionMenu: false,
+      onTextSelectionChanged: (details) {
+        if (details.selectedText != null &&
+            details.selectedText!.isNotEmpty &&
+            details.globalSelectedRegion != null) {
+          // Defer so Syncfusion finishes laying out selection handles.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            if (details.selectedText == null ||
+                details.globalSelectedRegion == null) {
+              return;
+            }
+            _showSelectionMenu(details);
+          });
+        } else {
+          _removeSelectionMenu();
+        }
+      },
       onDocumentLoaded: (details) {
         debugPrint(
           'PDF loaded: ${details.document.pages.count} pages from ${widget.document.path}',
@@ -503,6 +574,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         );
       },
       onPageChanged: (details) {
+        _removeSelectionMenu();
         setState(() => _currentPage = details.newPageNumber);
         _persistPage();
       },
@@ -587,10 +659,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           ),
           IconButton(
             tooltip: 'Markup',
-            onPressed: _showAnnotSheet,
+            onPressed: () {
+              _removeSelectionMenu();
+              _showAnnotSheet();
+            },
             icon: const Icon(PhosphorIconsRegular.highlighterCircle),
           ),
           PopupMenuButton<String>(
+            onOpened: _removeSelectionMenu,
             onSelected: (value) async {
               switch (value) {
                 case 'bookmark':
@@ -654,7 +730,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               ),
               const PopupMenuItem(
                 value: 'edit',
-                child: Text('Edit selected text'),
+                child: Text('Edit PDF text'),
               ),
               const PopupMenuItem(
                 value: 'share',
