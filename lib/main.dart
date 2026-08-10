@@ -21,7 +21,7 @@ Future<void> main() async {
   await Hive.initFlutter();
   final settingsRepo = await SettingsRepository.open();
   final libraryRepo = await LibraryRepository.open();
-
+//
   final purchaseService = PurchaseService(settingsRepo);
   await purchaseService.init();
 
