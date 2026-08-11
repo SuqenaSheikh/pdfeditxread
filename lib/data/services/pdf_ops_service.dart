@@ -1033,36 +1033,30 @@ class _LineInfo {
   final bool bold;
   final bool italic;
 
-  /// Join words on one visual line L→R, merging adjacent fragments.
+  /// Join words on one visual line L→R.
+  ///
+  /// Always put a space between Syncfusion [TextWord]s — they are already
+  /// word tokens. Never glue them (that removed all spaces in edit mode).
   factory _LineInfo.fromWords(List<_WordInfo> words) {
     final sorted = List<_WordInfo>.from(words)
       ..sort((a, b) => a.bounds.left.compareTo(b.bounds.left));
 
-    final parts = <String>[];
     var bounds = sorted.first.bounds;
     final sizes = <double>[];
-    for (var i = 0; i < sorted.length; i++) {
-      final w = sorted[i];
+    final parts = <String>[];
+
+    for (final w in sorted) {
       bounds = bounds.expandToInclude(w.bounds);
       sizes.add(w.fontSize);
-      if (i == 0) {
-        parts.add(w.text);
-        continue;
-      }
-      final prev = sorted[i - 1];
-      final gap = w.bounds.left - prev.bounds.right;
-      // Touching / overlapping fragments → one word (no space).
-      if (gap <= math.max(1.0, prev.fontSize * 0.22)) {
-        parts[parts.length - 1] = '${parts.last}${w.text}';
-      } else {
-        parts.add(w.text);
-      }
+      final token = w.text.trim();
+      if (token.isNotEmpty) parts.add(token);
     }
+
     sizes.sort();
     return _LineInfo(
       text: parts.join(' '),
       bounds: bounds,
-      fontSize: sizes[sizes.length ~/ 2],
+      fontSize: sizes.isEmpty ? 12.0 : sizes[sizes.length ~/ 2],
       fontName: sorted.first.fontName,
       bold: sorted.first.bold,
       italic: sorted.first.italic,
