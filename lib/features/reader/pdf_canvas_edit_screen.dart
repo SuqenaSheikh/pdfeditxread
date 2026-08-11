@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../data/models/pdf_document_item.dart';
+import '../../data/services/pdf_font_catalog.dart';
 import '../../data/services/pdf_ops_service.dart';
 import '../../providers/app_providers.dart';
 import 'editable_text_box.dart';
@@ -122,6 +123,9 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
   }
 
   void _select(String? id) {
+    if (id == null) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
     setState(() => _selectedId = id);
   }
 
@@ -489,7 +493,18 @@ class _EditablePageCanvas extends StatelessWidget {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
                       ),
-                    for (final box in boxes)
+                    for (final box in (() {
+                      // Selected box on top so Transparent neighbors don't steal taps.
+                      final ordered = List<PdfEditableBox>.from(boxes);
+                      if (selectedId != null) {
+                        ordered.sort((a, b) {
+                          if (a.id == selectedId) return 1;
+                          if (b.id == selectedId) return -1;
+                          return 0;
+                        });
+                      }
+                      return ordered;
+                    })())
                       _TextBoxOverlay(
                         box: box,
                         scale: scale,
@@ -548,8 +563,16 @@ class _TextBoxOverlayState extends State<_TextBoxOverlay> {
         _controller.text != widget.box.text) {
       _controller.text = widget.box.text;
     }
-    if (widget.selected && !_focus.hasFocus) {
-      // Keep selection visual without stealing focus every rebuild.
+    if (oldWidget.selected && !widget.selected && _focus.hasFocus) {
+      _focus.unfocus();
+    }
+    if (!oldWidget.selected && widget.selected) {
+      // Tap selected the box — open the keyboard on the next frame once
+      // the TextField exists in the tree.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !widget.selected) return;
+        _focus.requestFocus();
+      });
     }
   }
 
@@ -560,133 +583,228 @@ class _TextBoxOverlayState extends State<_TextBoxOverlay> {
     super.dispose();
   }
 
+  TextStyle _pdfLikeStyle(double fontSize, {required Color color}) {
+    final box = widget.box;
+    final nameLower = box.fontName.toLowerCase();
+    // Never use PDF-embedded subset TTFs in Flutter TextFields — their cmaps
+    // often are not Unicode and render as □ tofu boxes. Save still uses the
+    // real embedded face via PdfTrueTypeFont.
+    final family =
+        PdfEmbeddedFontCatalog.flutterFallbackFamily(box.fontName);
+    final synthesizeBold = box.bold &&
+        !nameLower.contains('bold') &&
+        !nameLower.contains('black');
+    final synthesizeItalic = box.italic &&
+        !nameLower.contains('italic') &&
+        !nameLower.contains('oblique');
+
+    return TextStyle(
+      fontSize: fontSize,
+      height: 1.0,
+      leadingDistribution: TextLeadingDistribution.even,
+      color: color,
+      fontWeight: synthesizeBold ? FontWeight.w700 : FontWeight.w400,
+      fontStyle: synthesizeItalic ? FontStyle.italic : FontStyle.normal,
+      fontFamily: family,
+      fontFamilyFallback: const [
+        'Roboto',
+        'Noto Sans',
+        'Helvetica',
+        'Arial',
+        'sans-serif',
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final box = widget.box;
     final s = widget.scale;
-    final left = box.bounds.left * s;
-    final top = box.bounds.top * s;
-    final width = (box.bounds.width * s).clamp(48.0, 4000.0);
-    final fontSize = (box.fontSize * s).clamp(8.0, 96.0);
+    final glyphW = math.max(box.bounds.width * s, 8.0);
+    final glyphH = math.max(box.bounds.height * s, 8.0);
+    // Cap display size to the glyph slot so text cannot spill onto neighbors.
+    final fontSize = math
+        .min(box.fontSize * s, glyphH)
+        .clamp(5.0, 96.0);
 
-    // Measure full text so the field is tall/wide enough to read & edit.
+    // Editor chrome only while selected. Dirty+deselected → in-place preview.
+    final isEditing = widget.selected;
+    final showPaintedText = isEditing || box.dirty || box.isNew;
+    final multiline = box.text.contains('\n');
+
+    final style = _pdfLikeStyle(
+      fontSize,
+      color: AppColors.lightPrimaryText,
+    );
     final painter = TextPainter(
       text: TextSpan(
         text: box.text.isEmpty ? ' ' : box.text,
-        style: TextStyle(
-          fontSize: fontSize,
-          height: 1.25,
-          fontWeight: box.bold ? FontWeight.w700 : FontWeight.w400,
-          fontStyle: box.italic ? FontStyle.italic : FontStyle.normal,
-          fontFamily: 'Manrope',
-        ),
+        style: style,
       ),
       textDirection: TextDirection.ltr,
-      maxLines: null,
-    )..layout(maxWidth: width - 4);
-    final height = math
-        .max(box.bounds.height * s, painter.height + 8)
-        .clamp(20.0, 4000.0);
+      maxLines: multiline ? null : 1,
+    )..layout(maxWidth: multiline ? glyphW : 10000);
+
+    // Grow right only when text is longer; keep the original top-left anchor.
+    // While editing, use a comfortable tap height so the keyboard can open.
+    final width = math.max(glyphW, painter.width + (isEditing ? 2.0 : 0.5));
+    final height = isEditing
+        ? math.max(math.max(glyphH, multiline ? painter.height : glyphH), 32.0)
+        : (multiline ? math.max(glyphH, painter.height) : glyphH);
+
+    final left = box.bounds.left * s;
+    final top = box.bounds.top * s;
+
+    final field = MediaQuery(
+      data: MediaQuery.of(context).copyWith(
+        textScaler: TextScaler.noScaling,
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(
+          inputDecorationTheme: const InputDecorationTheme(
+            filled: false,
+            fillColor: Colors.transparent,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            disabledBorder: InputBorder.none,
+            errorBorder: InputBorder.none,
+            focusedErrorBorder: InputBorder.none,
+            isDense: true,
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+        child: TextField(
+          controller: _controller,
+          focusNode: _focus,
+          maxLines: multiline ? null : 1,
+          expands: multiline,
+          cursorColor: AppColors.lightAccent,
+          textAlignVertical: TextAlignVertical.center,
+          keyboardType:
+              multiline ? TextInputType.multiline : TextInputType.text,
+          enableInteractiveSelection: true,
+          style: style,
+          decoration: const InputDecoration(
+            isDense: true,
+            filled: false,
+            fillColor: Colors.transparent,
+            contentPadding: EdgeInsets.zero,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+          ),
+          onTap: () {
+            widget.onSelect();
+            _focus.requestFocus();
+          },
+          onChanged: (v) {
+            box.text = v;
+            widget.onChanged();
+          },
+        ),
+      ),
+    );
 
     return Positioned(
       left: left,
       top: top,
       width: width,
       height: height,
-      child: GestureDetector(
-        onTap: widget.onSelect,
-        onPanUpdate: widget.selected
-            ? (d) {
-                box.bounds = box.bounds.shift(
-                  Offset(d.delta.dx / s, d.delta.dy / s),
-                );
-                widget.onChanged();
-              }
-            : null,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            SizedBox.expand(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: AppColors.pdfPaper,
-                  border: Border.all(
-                    color: widget.selected
-                        ? AppColors.lightAccent
-                        : AppColors.lightAccent.withValues(alpha: 0.45),
-                    width: widget.selected ? 1.5 : 1,
-                  ),
-                ),
-                child: MediaQuery(
-                  data: MediaQuery.of(context).copyWith(
-                    textScaler: TextScaler.noScaling,
-                  ),
-                  child: TextField(
-                    controller: _controller,
-                    focusNode: _focus,
-                    maxLines: null,
-                    expands: true,
-                    textAlignVertical: TextAlignVertical.top,
-                    style: TextStyle(
-                      fontSize: fontSize,
-                      height: 1.25,
-                      color: AppColors.lightPrimaryText,
-                      fontWeight:
-                          box.bold ? FontWeight.w700 : FontWeight.w400,
-                      fontStyle:
-                          box.italic ? FontStyle.italic : FontStyle.normal,
-                      fontFamily: 'Manrope',
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          ClipRect(
+            child: ColoredBox(
+              color: showPaintedText
+                  ? AppColors.pdfPaper
+                  : Colors.transparent,
+              // Important: do NOT wrap the TextField in a GestureDetector that
+              // steals taps — that blocked keyboard/editing after selection.
+              child: isEditing
+                  ? field
+                  : GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: widget.onSelect,
+                      child: showPaintedText
+                          ? Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                box.text,
+                                maxLines: multiline ? null : 1,
+                                softWrap: multiline,
+                                overflow: TextOverflow.visible,
+                                style: style,
+                              ),
+                            )
+                          : const SizedBox.expand(),
                     ),
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 4,
-                        vertical: 2,
-                      ),
-                      border: InputBorder.none,
+            ),
+          ),
+          if (isEditing)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: AppColors.lightAccent,
+                      width: 1.5,
                     ),
-                    onTap: widget.onSelect,
-                    onChanged: (v) {
-                      box.text = v;
-                      widget.onChanged();
-                    },
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
             ),
-            if (widget.selected)
-              Positioned(
-                right: -8,
-                bottom: -8,
-                child: GestureDetector(
-                  onPanUpdate: (d) {
-                    final next = Rect.fromLTWH(
-                      box.bounds.left,
-                      box.bounds.top,
-                      (box.bounds.width + d.delta.dx / s).clamp(20.0, 2000.0),
-                      (box.bounds.height + d.delta.dy / s).clamp(12.0, 2000.0),
-                    );
-                    box.bounds = next;
-                    widget.onChanged();
-                  },
-                  child: Container(
-                    width: 18,
-                    height: 18,
-                    decoration: BoxDecoration(
-                      color: AppColors.lightAccent,
-                      borderRadius: BorderRadius.circular(2),
-                      border: Border.all(color: Colors.white, width: 1),
-                    ),
-                    child: const Icon(
-                      Icons.south_east,
-                      size: 12,
-                      color: Colors.white,
-                    ),
+          // Drag from the top edge only — keeps typing gestures free.
+          if (isEditing)
+            Positioned(
+              left: 0,
+              right: 18,
+              top: 0,
+              height: 10,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (d) {
+                  box.bounds = box.bounds.shift(
+                    Offset(d.delta.dx / s, d.delta.dy / s),
+                  );
+                  widget.onChanged();
+                },
+                child: const ColoredBox(color: Color(0x00000000)),
+              ),
+            ),
+          if (isEditing)
+            Positioned(
+              right: -8,
+              bottom: -8,
+              child: GestureDetector(
+                onPanUpdate: (d) {
+                  final next = Rect.fromLTWH(
+                    box.bounds.left,
+                    box.bounds.top,
+                    (box.bounds.width + d.delta.dx / s).clamp(20.0, 2000.0),
+                    (box.bounds.height + d.delta.dy / s).clamp(12.0, 2000.0),
+                  );
+                  box.bounds = next;
+                  widget.onChanged();
+                },
+                child: Container(
+                  width: 18,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    color: AppColors.lightAccent,
+                    borderRadius: BorderRadius.circular(2),
+                    border: Border.all(color: Colors.white, width: 1),
+                  ),
+                  child: const Icon(
+                    Icons.south_east,
+                    size: 12,
+                    color: Colors.white,
                   ),
                 ),
               ),
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }

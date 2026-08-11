@@ -13,6 +13,7 @@ import 'package:syncfusion_pdfviewer_platform_interface/pdfviewer_platform_inter
 import 'package:uuid/uuid.dart';
 
 import '../../features/reader/editable_text_box.dart';
+import 'pdf_font_catalog.dart';
 
 /// Structural PDF operations (merge, split, reorder, delete, encrypt, export).
 class PdfOpsService {
@@ -239,7 +240,9 @@ class PdfOpsService {
       throw ArgumentError('No text bounds to replace.');
     }
 
-    final doc = PdfDocument(inputBytes: await File(path).readAsBytes());
+      final fileBytes = await File(path).readAsBytes();
+      final catalog = PdfEmbeddedFontCatalog.fromPdfBytes(fileBytes);
+      final doc = PdfDocument(inputBytes: fileBytes);
     try {
       if (pageIndexZeroBased < 0 ||
           pageIndexZeroBased >= doc.pages.count) {
@@ -266,7 +269,6 @@ class PdfOpsService {
         cover: cover,
       );
 
-      final family = _mapFontFamily(matched.fontName);
       final styles = <PdfFontStyle>{
         ...matched.styles,
         if (bold) PdfFontStyle.bold,
@@ -279,10 +281,11 @@ class PdfOpsService {
               : avgLineHeight)
           .clamp(1.0, 200.0);
 
-      final font = PdfStandardFont(
-        family,
-        fontSize,
-        multiStyle: styles.toList(growable: false),
+      final font = catalog.resolvePdfFont(
+        fontName: matched.fontName,
+        size: fontSize,
+        bold: styles.contains(PdfFontStyle.bold),
+        italic: styles.contains(PdfFontStyle.italic),
       );
 
       final brush = PdfSolidBrush(PdfColor(28, 28, 30));
@@ -427,25 +430,16 @@ class PdfOpsService {
     return (fontName: 'Helvetica', fontSize: 0, styles: <PdfFontStyle>[]);
   }
 
-  PdfFontFamily _mapFontFamily(String rawName) {
-    final name = rawName.toLowerCase();
-    if (name.contains('times') ||
-        name.contains('georgia') ||
-        name.contains('garamond') ||
-        name.contains('cambria') ||
-        name.contains('palatino') ||
-        name.contains('serif')) {
-      return PdfFontFamily.timesRoman;
-    }
-    if (name.contains('courier') ||
-        name.contains('consolas') ||
-        name.contains('monaco') ||
-        name.contains('mono') ||
-        name.contains('menlo')) {
-      return PdfFontFamily.courier;
-    }
-    // Arial, Helvetica, Calibri, Roboto, etc. → Helvetica (closest standard).
-    return PdfFontFamily.helvetica;
+  PdfFont _fontForBox(
+    PdfEmbeddedFontCatalog catalog,
+    PdfEditableBox box,
+  ) {
+    return catalog.resolvePdfFont(
+      fontName: box.fontName,
+      size: box.fontSize.clamp(6.0, 96.0),
+      bold: box.bold,
+      italic: box.italic,
+    );
   }
 
   Future<String> buildPdfFromImages(
@@ -553,13 +547,26 @@ class PdfOpsService {
     }
   }
 
-  /// Extract editable boxes by rebuilding words → visual lines → paragraphs.
+  /// Extract editable boxes by rebuilding words → column-aware lines → paragraphs.
   ///
   /// Syncfusion's extractTextLines often returns mid-word fragments on
   /// complex PDFs; rebuilding from TextWords keeps full readable text.
-  Future<({List<PdfEditableBox> boxes, List<PdfPageMetrics> pages})>
-      extractEditableBoxes(String path) async {
-    final doc = PdfDocument(inputBytes: await File(path).readAsBytes());
+  /// Large X gaps between words (tables / dual columns) stay separate boxes so
+  /// invoice layouts are not merged into one blob.
+  ///
+  /// Also extracts embedded TrueType faces so redraw/preview can match the PDF.
+  Future<
+      ({
+        List<PdfEditableBox> boxes,
+        List<PdfPageMetrics> pages,
+        PdfEmbeddedFontCatalog fonts,
+      })> extractEditableBoxes(String path) async {
+    final bytes = await File(path).readAsBytes();
+    final fonts = PdfEmbeddedFontCatalog.fromPdfBytes(bytes);
+    // Flutter UI uses fallback faces — embedded subsets often tofu in TextField.
+    // Catalog is still used on save for true PDF font matching.
+
+    final doc = PdfDocument(inputBytes: bytes);
     final uuid = const Uuid();
     try {
       final pages = <PdfPageMetrics>[
@@ -573,7 +580,6 @@ class PdfOpsService {
       final boxes = <PdfEditableBox>[];
 
       for (var pageIndex = 0; pageIndex < doc.pages.count; pageIndex++) {
-        final page = pages[pageIndex];
         final rawLines = extractor.extractTextLines(
           startPageIndex: pageIndex,
           endPageIndex: pageIndex,
@@ -588,7 +594,7 @@ class PdfOpsService {
             continue;
           }
           for (final word in line.wordCollection) {
-            final t = word.text.replaceAll('\r', '').trim();
+            final t = _sanitizeExtractedText(word.text.replaceAll('\r', ''));
             if (t.isEmpty) continue;
             words.add(_WordInfo.fromTextWord(word));
           }
@@ -600,18 +606,14 @@ class PdfOpsService {
         final paragraphs = _groupLinesIntoParagraphs(visualLines);
 
         for (final paragraph in paragraphs) {
-          final displayBounds = _boundsForReadableText(
-            glyphBounds: paragraph.bounds,
-            text: paragraph.text,
-            fontSize: paragraph.fontSize,
-            page: page,
-          );
+          // Keep glyph bounds — expanding them overlaps neighbors on tables.
+          final bounds = paragraph.bounds;
           boxes.add(
             PdfEditableBox(
               id: uuid.v4(),
               pageIndex: pageIndex,
-              originalBounds: paragraph.bounds,
-              bounds: displayBounds,
+              originalBounds: bounds,
+              bounds: bounds,
               text: paragraph.text,
               fontSize: paragraph.fontSize,
               fontName: paragraph.fontName,
@@ -622,55 +624,17 @@ class PdfOpsService {
         }
       }
 
-      return (boxes: boxes, pages: pages);
+      return (boxes: boxes, pages: pages, fonts: fonts);
     } finally {
       doc.dispose();
     }
   }
 
-  /// Expand a box so the full paragraph text is visible/editable.
-  Rect _boundsForReadableText({
-    required Rect glyphBounds,
-    required String text,
-    required double fontSize,
-    required PdfPageMetrics page,
-  }) {
-    final lines = text.split('\n');
-    final longest = lines.fold<int>(
-      0,
-      (m, l) => l.length > m ? l.length : m,
-    );
-    final neededW = math.max(
-      glyphBounds.width,
-      longest * fontSize * 0.52,
-    );
-    final neededH = math.max(
-      glyphBounds.height,
-      lines.length * fontSize * 1.35,
-    );
-
-    var left = glyphBounds.left;
-    var top = glyphBounds.top;
-    var width = neededW;
-    var height = neededH;
-
-    final maxRight = page.width - 8;
-    final maxBottom = page.height - 8;
-    if (left + width > maxRight) {
-      width = math.max(40.0, maxRight - left);
-    }
-    if (width < neededW && left > 8) {
-      left = math.max(8.0, maxRight - neededW);
-      width = math.min(neededW, maxRight - left);
-    }
-    if (top + height > maxBottom) {
-      height = math.max(fontSize * 1.35, maxBottom - top);
-    }
-
-    return Rect.fromLTWH(left, top, width, height);
-  }
-
-  /// Cluster words into visual lines by Y center, then join L→R.
+  /// Cluster words into visual line runs.
+  ///
+  /// Words share a run only when Y centers are close **and** the horizontal
+  /// gap is normal word spacing. Wide gaps (columns / table cells) start a
+  /// new run so side-by-side blocks stay separate.
   List<_LineInfo> _clusterWordsIntoLines(List<_WordInfo> words) {
     final sorted = List<_WordInfo>.from(words)
       ..sort((a, b) {
@@ -681,29 +645,61 @@ class PdfOpsService {
 
     final lines = <List<_WordInfo>>[];
     for (final word in sorted) {
-      if (lines.isEmpty) {
-        lines.add([word]);
-        continue;
+      var placed = false;
+      for (final cluster in lines) {
+        final ref = cluster.first;
+        final yTol = math.max(
+          3.0,
+          math.max(ref.bounds.height, word.bounds.height) * 0.55,
+        );
+        if ((word.bounds.center.dy - ref.bounds.center.dy).abs() > yTol) {
+          continue;
+        }
+
+        // Nearest word already in this run (usually the rightmost to the left).
+        _WordInfo? nearest;
+        var nearestGap = double.infinity;
+        for (final existing in cluster) {
+          final gap = word.bounds.left >= existing.bounds.right
+              ? word.bounds.left - existing.bounds.right
+              : existing.bounds.left - word.bounds.right;
+          if (gap < nearestGap) {
+            nearestGap = gap;
+            nearest = existing;
+          }
+        }
+        if (nearest == null) continue;
+
+        final fontRef = math.max(nearest.fontSize, word.fontSize);
+        // Typical inter-word space is ~0.2–0.4× font; columns are much wider.
+        final maxGap = math.max(fontRef * 2.4, 12.0);
+        if (nearestGap <= maxGap) {
+          cluster.add(word);
+          placed = true;
+          break;
+        }
       }
-      final current = lines.last;
-      final ref = current.first;
-      final yTol = math.max(
-        3.0,
-        math.max(ref.bounds.height, word.bounds.height) * 0.55,
-      );
-      if ((word.bounds.center.dy - ref.bounds.center.dy).abs() <= yTol) {
-        current.add(word);
-      } else {
+      if (!placed) {
         lines.add([word]);
       }
     }
 
-    return [
+    // Stable top→bottom, then left→right reading order for paragraph merges.
+    final result = [
       for (final cluster in lines) _LineInfo.fromWords(cluster),
-    ];
+    ]..sort((a, b) {
+        final dy = a.bounds.top.compareTo(b.bounds.top);
+        if (dy != 0) return dy;
+        return a.bounds.left.compareTo(b.bounds.left);
+      });
+    return result;
   }
 
-  /// Merge consecutive visual lines that belong to the same paragraph.
+  /// Merge consecutive visual lines that belong to the same prose paragraph.
+  ///
+  /// Conservative: requires tight left alignment and vertical proximity so
+  /// multi-column / table rows are not glued into one editable block. Body
+  /// text still merges because lines share a left edge and small gaps.
   List<({
     String text,
     Rect bounds,
@@ -749,24 +745,20 @@ class PdfOpsService {
       final gap = next.bounds.top - prev.bounds.bottom;
       final maxH = math.max(prev.bounds.height, next.bounds.height);
       final leftDelta = (next.bounds.left - prev.bounds.left).abs();
-      final hOverlap = prev.bounds
-          .intersect(
-            Rect.fromLTRB(
-              next.bounds.left,
-              prev.bounds.top,
-              next.bounds.right,
-              prev.bounds.bottom,
-            ),
-          )
-          .width;
-      final sameColumn = leftDelta <= math.max(18.0, prev.fontSize * 2) ||
-          hOverlap > math.min(prev.bounds.width, next.bounds.width) * 0.25;
+      // Same prose column: left edges nearly align (indent ≤ ~1 char).
+      final sameColumn = leftDelta <= math.max(6.0, prev.fontSize * 0.9);
       final sizeDelta = (next.fontSize - prev.fontSize).abs();
       final similarSize =
-          sizeDelta <= 1.5 || sizeDelta <= prev.fontSize * 0.22;
-      final closeVertically = gap <= maxH * 1.15;
+          sizeDelta <= 1.25 || sizeDelta <= prev.fontSize * 0.18;
+      // Single-line spacing only — larger gaps are section breaks.
+      final closeVertically = gap >= -2 && gap <= maxH * 0.65;
+      // Avoid merging a short label with a wide row (or vice versa).
+      final widthRatio = math.min(prev.bounds.width, next.bounds.width) /
+          math.max(prev.bounds.width, next.bounds.width).clamp(1.0, 1e9);
+      final similarWidth = widthRatio >= 0.35 ||
+          next.bounds.width <= prev.bounds.width * 1.05;
 
-      if (closeVertically && sameColumn && similarSize) {
+      if (closeVertically && sameColumn && similarSize && similarWidth) {
         cluster.add(next);
       } else {
         flush();
@@ -820,7 +812,10 @@ class PdfOpsService {
       return a.bounds.top.compareTo(b.bounds.top);
     });
 
-    final doc = PdfDocument(inputBytes: await File(path).readAsBytes());
+    final fileBytes = await File(path).readAsBytes();
+    final catalog = PdfEmbeddedFontCatalog.fromPdfBytes(fileBytes);
+
+    final doc = PdfDocument(inputBytes: fileBytes);
     try {
       final coverBrush = PdfSolidBrush(
         PdfColor(
@@ -835,61 +830,83 @@ class PdfOpsService {
         if (box.pageIndex < 0 || box.pageIndex >= doc.pages.count) continue;
         final g = doc.pages[box.pageIndex].graphics;
 
-        // Erase only the original paragraph so neighbors stay intact.
-        if (!box.isNew) {
-          final padded = Rect.fromLTRB(
-            box.originalBounds.left - 0.6,
-            box.originalBounds.top - 0.6,
-            box.originalBounds.right + 0.8,
-            box.originalBounds.bottom + 0.8,
-          );
-          g.drawRectangle(bounds: padded, brush: coverBrush);
-        } else if (box.deleted) {
-          // nothing to cover
+        if (box.deleted || box.text.trim().isEmpty) {
+          if (!box.isNew) {
+            final padded = Rect.fromLTRB(
+              box.originalBounds.left - 0.8,
+              box.originalBounds.top - 0.8,
+              box.originalBounds.right + 1.0,
+              box.originalBounds.bottom + 1.0,
+            );
+            g.drawRectangle(bounds: padded, brush: coverBrush);
+          }
+          continue;
         }
 
-        if (box.deleted || box.text.trim().isEmpty) continue;
+        final font = _fontForBox(catalog, box);
 
-        // Sticky size — never derive from box height.
-        final fontSize = box.fontSize.clamp(6.0, 96.0);
-        final styles = <PdfFontStyle>[
-          if (box.bold) PdfFontStyle.bold,
-          if (box.italic) PdfFontStyle.italic,
-        ];
-        final font = PdfStandardFont(
-          _mapFontFamily(box.fontName),
-          fontSize,
-          multiStyle: styles,
-        );
-
-        // Draw into the original glyph area when present so edits stay in
-        // the paragraph slot and don't cover neighbors. New boxes use bounds.
-        final drawBounds = box.isNew
-            ? Rect.fromLTWH(
-                box.bounds.left,
-                box.bounds.top,
-                math.max(box.bounds.width, 4),
-                math.max(box.bounds.height, fontSize * 1.2),
-              )
-            : Rect.fromLTWH(
-                box.originalBounds.left,
-                box.originalBounds.top,
-                math.max(box.originalBounds.width, 4),
-                math.max(box.originalBounds.height, fontSize * 1.2),
-              );
-
+        final multiline = box.text.contains('\n');
         final format = PdfStringFormat(
           alignment: PdfTextAlignment.left,
-          lineAlignment: PdfVerticalAlignment.top,
-          wordWrap: PdfWordWrapType.word,
+          lineAlignment: multiline
+              ? PdfVerticalAlignment.top
+              : PdfVerticalAlignment.middle,
+          wordWrap:
+              multiline ? PdfWordWrapType.word : PdfWordWrapType.none,
         )
-          ..lineLimit = true
-          ..noClip = false;
+          ..lineLimit = multiline
+          ..noClip = true
+          ..characterSpacing = 0
+          ..wordSpacing = 0;
+
+        // Current on-screen slot (move/resize updates bounds).
+        final slot = box.bounds;
+        final slotWidth = math.max(
+          slot.width,
+          box.isNew ? slot.width : box.originalBounds.width,
+        );
+        final slotHeight = math.max(
+          slot.height,
+          box.isNew ? slot.height : box.originalBounds.height,
+        );
+
+        final measured = font.measureString(
+          box.text,
+          layoutArea: Size(
+            multiline ? math.max(slotWidth, 8) : 10000,
+            multiline ? 10000 : box.fontSize * 2,
+          ),
+          format: format,
+        );
+
+        // Expand right when text is longer — never wrap a one-line cell.
+        final paintBounds = Rect.fromLTWH(
+          slot.left,
+          slot.top,
+          math.max(slotWidth, measured.width + 0.5),
+          multiline
+              ? math.max(slotHeight, measured.height + 0.5)
+              : math.max(slotHeight, measured.height),
+        );
+
+        // White-out original glyphs + any expanded redraw area.
+        final erase = box.isNew
+            ? paintBounds
+            : box.originalBounds.expandToInclude(paintBounds);
+        g.drawRectangle(
+          bounds: Rect.fromLTRB(
+            erase.left - 0.8,
+            erase.top - 0.8,
+            erase.right + 1.2,
+            erase.bottom + 1.0,
+          ),
+          brush: coverBrush,
+        );
 
         g.drawString(
           box.text,
           font,
-          bounds: drawBounds,
+          bounds: paintBounds,
           brush: brush,
           format: format,
         );
@@ -990,13 +1007,19 @@ class _WordInfo {
         ? word.fontSize
         : (word.bounds.height * 0.75).clamp(8.0, 48.0);
     final styles = List<PdfFontStyle>.from(word.fontStyle);
+    final name = word.fontName.isEmpty ? 'Helvetica' : word.fontName;
+    final lower = name.toLowerCase();
     return _WordInfo(
-      text: word.text,
+      text: _sanitizeExtractedText(word.text),
       bounds: word.bounds,
       fontSize: size,
-      fontName: word.fontName.isEmpty ? 'Helvetica' : word.fontName,
-      bold: styles.contains(PdfFontStyle.bold),
-      italic: styles.contains(PdfFontStyle.italic),
+      fontName: name,
+      bold: styles.contains(PdfFontStyle.bold) ||
+          lower.contains('bold') ||
+          lower.contains('black'),
+      italic: styles.contains(PdfFontStyle.italic) ||
+          lower.contains('italic') ||
+          lower.contains('oblique'),
     );
   }
 
@@ -1005,15 +1028,31 @@ class _WordInfo {
         ? line.fontSize
         : (line.bounds.height * 0.75).clamp(8.0, 48.0);
     final styles = List<PdfFontStyle>.from(line.fontStyle);
+    final name = line.fontName.isEmpty ? 'Helvetica' : line.fontName;
+    final lower = name.toLowerCase();
     return _WordInfo(
-      text: text,
+      text: _sanitizeExtractedText(text),
       bounds: line.bounds,
       fontSize: size,
-      fontName: line.fontName.isEmpty ? 'Helvetica' : line.fontName,
-      bold: styles.contains(PdfFontStyle.bold),
-      italic: styles.contains(PdfFontStyle.italic),
+      fontName: name,
+      bold: styles.contains(PdfFontStyle.bold) ||
+          lower.contains('bold') ||
+          lower.contains('black'),
+      italic: styles.contains(PdfFontStyle.italic) ||
+          lower.contains('italic') ||
+          lower.contains('oblique'),
     );
   }
+}
+
+/// Drop control / replacement glyphs that show as □ in the text field.
+String _sanitizeExtractedText(String raw) {
+  final cleaned = raw
+      .replaceAll('\r', '')
+      .replaceAll(RegExp(r'[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]'), '')
+      .replaceAll('\uFFFD', '')
+      .replaceAll(RegExp(r'[\uE000-\uF8FF]'), ''); // private-use tofu
+  return cleaned.trim();
 }
 
 class _LineInfo {
