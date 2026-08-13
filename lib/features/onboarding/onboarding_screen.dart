@@ -69,7 +69,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   const Spacer(),
                   if (!isLast)
                     TextButton(
-                      onPressed: _finish,
+                      onPressed: () {
+                        // Session-only skip — onboarding returns next launch
+                        // until the user taps Get started.
+                        ref
+                            .read(onboardingSkippedThisSessionProvider.notifier)
+                            .state = true;
+                      },
                       child: const Text('Skip'),
                     ),
                 ],

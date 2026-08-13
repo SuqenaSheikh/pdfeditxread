@@ -26,6 +26,7 @@ dependencies:
   # Pinned for Flutter 3.32 / Dart 3.8 (31.1.20+ requires Flutter >=3.35.1)
   syncfusion_flutter_pdfviewer: 31.1.19
   syncfusion_flutter_pdf: 31.1.19
+  syncfusion_flutter_core: 31.1.19
   syncfusion_pdfviewer_platform_interface: 31.1.19
   google_mlkit_document_scanner: ^0.3.0
   google_mlkit_text_recognition: ^0.15.0

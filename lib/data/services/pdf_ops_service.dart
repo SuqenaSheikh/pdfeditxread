@@ -83,10 +83,27 @@ class PdfOpsService {
   }
 
   Future<String> reorder(String path, List<int> newOrderOneBased) async {
+    return extractPages(
+      path,
+      newOrderOneBased,
+      outputName: '${p.basenameWithoutExtension(path)}_reordered.pdf',
+    );
+  }
+
+  /// Builds a new PDF containing only [pagesOneBased] (1-based), in that order.
+  Future<String> extractPages(
+    String path,
+    List<int> pagesOneBased, {
+    String? outputName,
+  }) async {
+    if (pagesOneBased.isEmpty) {
+      throw ArgumentError('Select at least one page.');
+    }
     final source = PdfDocument(inputBytes: await File(path).readAsBytes());
     final target = PdfDocument();
     try {
-      for (final pageNum in newOrderOneBased) {
+      for (final pageNum in pagesOneBased) {
+        if (pageNum < 1 || pageNum > source.pages.count) continue;
         final template = source.pages[pageNum - 1].createTemplate();
         target.pages.add().graphics.drawPdfTemplate(
               template,
@@ -94,15 +111,53 @@ class PdfOpsService {
               Size(template.size.width, template.size.height),
             );
       }
+      if (target.pages.count == 0) {
+        throw ArgumentError('No valid pages to extract.');
+      }
       final bytes = Uint8List.fromList(target.saveSync());
       return _writeOutput(
         bytes,
-        '${p.basenameWithoutExtension(path)}_reordered.pdf',
+        outputName ??
+            '${p.basenameWithoutExtension(path)}_part_${DateTime.now().millisecondsSinceEpoch}.pdf',
       );
     } finally {
       target.dispose();
       source.dispose();
     }
+  }
+
+  /// Split into selected pages (PDF 1) and the remaining pages (PDF 2).
+  Future<List<String>> splitSelectedAndRest(
+    String path,
+    List<int> selectedOneBased,
+  ) async {
+    final count = await pageCount(path);
+    final selected = selectedOneBased
+        .where((p) => p >= 1 && p <= count)
+        .toSet()
+        .toList()
+      ..sort();
+    if (selected.isEmpty || selected.length == count) {
+      throw ArgumentError(
+        'Select some pages — but not all — to split into two PDFs.',
+      );
+    }
+    final rest = [
+      for (var i = 1; i <= count; i++)
+        if (!selected.contains(i)) i,
+    ];
+    final base = p.basenameWithoutExtension(path);
+    final first = await extractPages(
+      path,
+      selected,
+      outputName: '${base}_part1.pdf',
+    );
+    final second = await extractPages(
+      path,
+      rest,
+      outputName: '${base}_part2.pdf',
+    );
+    return [first, second];
   }
 
   Future<String> deletePages(String path, List<int> pagesOneBased) async {

@@ -16,6 +16,7 @@ class DocumentTile extends StatelessWidget {
     this.onDelete,
     this.onRename,
     this.compact = false,
+    this.selected,
   });
 
   final PdfDocumentItem document;
@@ -25,6 +26,9 @@ class DocumentTile extends StatelessWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onRename;
   final bool compact;
+
+  /// When non-null, shows a selection check instead of the overflow menu.
+  final bool? selected;
 
   @override
   Widget build(BuildContext context) {
@@ -42,12 +46,20 @@ class DocumentTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(compact ? 8 : 16),
       child: InkWell(
         onTap: onTap,
-        onLongPress: () => _showActions(context),
+        onLongPress: selected == null ? () => _showActions(context) : null,
         borderRadius: BorderRadius.circular(compact ? 8 : 16),
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(compact ? 8 : 16),
-            border: Border.all(color: colors.outline),
+            border: Border.all(
+              color: selected == true
+                  ? colors.primary
+                  : colors.outline,
+              width: selected == true ? 1.5 : 1,
+            ),
+            color: selected == true
+                ? colors.primary.withValues(alpha: 0.06)
+                : null,
           ),
           padding: EdgeInsets.all(compact ? 10 : 12),
           child: Row(
@@ -71,14 +83,23 @@ class DocumentTile extends StatelessWidget {
                   ],
                 ),
               ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: () => _showActions(context),
-                icon: Icon(
-                  PhosphorIconsRegular.dotsThreeVertical,
-                  color: colors.onSurface.withValues(alpha: 0.45),
+              if (selected != null)
+                Icon(
+                  selected!
+                      ? PhosphorIconsFill.checkCircle
+                      : PhosphorIconsRegular.circle,
+                  color: selected! ? colors.primary : colors.outline,
+                  size: 26,
+                )
+              else
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _showActions(context),
+                  icon: Icon(
+                    PhosphorIconsRegular.dotsThreeVertical,
+                    color: colors.onSurface.withValues(alpha: 0.45),
+                  ),
                 ),
-              ),
             ],
           ),
         ),

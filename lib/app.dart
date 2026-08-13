@@ -15,6 +15,7 @@ class FolioApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
     final onboarded = ref.watch(settingsProvider).hasCompletedOnboarding;
+    final skippedThisSession = ref.watch(onboardingSkippedThisSessionProvider);
 
     return MaterialApp(
       title: AppConstants.appName,
@@ -22,7 +23,7 @@ class FolioApp extends ConsumerWidget {
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: themeMode,
-      home: onboarded
+      home: (onboarded || skippedThisSession)
           ? const OpenIntentListener(child: HomeShell())
           : const OnboardingScreen(),
     );

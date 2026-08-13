@@ -4,7 +4,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
+import '../../core/widgets/folio_password_field.dart';
+import '../../data/models/pdf_document_item.dart';
 import '../../providers/app_providers.dart';
+import 'merge_order_screen.dart';
+import 'page_select_tool_screen.dart';
+import 'reorder_pages_screen.dart';
+import 'tool_pdf_picker_screen.dart';
 
 Future<void> _withLoading(
   BuildContext context,
@@ -37,19 +43,6 @@ Future<String?> _pickSinglePdf() async {
   return result?.files.single.path;
 }
 
-Future<List<String>> _pickMultiplePdfs() async {
-  final result = await FilePicker.platform.pickFiles(
-    type: FileType.custom,
-    allowedExtensions: const ['pdf'],
-    allowMultiple: true,
-  );
-  if (result == null) return const [];
-  return result.files
-      .map((f) => f.path)
-      .whereType<String>()
-      .toList(growable: false);
-}
-
 Future<void> _finishWithImport(
   BuildContext context,
   WidgetRef ref,
@@ -67,149 +60,143 @@ Future<void> _finishWithImport(
   );
 }
 
+Future<List<PdfDocumentItem>?> _pickFromLibrary(
+  BuildContext context, {
+  required String title,
+  bool allowMultiple = false,
+  int minSelection = 1,
+}) {
+  return Navigator.of(context).push<List<PdfDocumentItem>>(
+    MaterialPageRoute(
+      builder: (_) => ToolPdfPickerScreen(
+        title: title,
+        allowMultiple: allowMultiple,
+        minSelection: minSelection,
+      ),
+    ),
+  );
+}
+
 Future<void> runMergeFlow(BuildContext context, WidgetRef ref) async {
-  final paths = await _pickMultiplePdfs();
-  if (paths.length < 2) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select at least two PDFs to merge.')),
-      );
-    }
-    return;
-  }
+  final picked = await _pickFromLibrary(
+    context,
+    title: 'Merge PDFs',
+    allowMultiple: true,
+    minSelection: 2,
+  );
+  if (picked == null || picked.length < 2 || !context.mounted) return;
+
+  final ordered = await Navigator.of(context).push<List<PdfDocumentItem>>(
+    MaterialPageRoute(
+      builder: (_) => MergeOrderScreen(documents: picked),
+    ),
+  );
+  if (ordered == null || ordered.length < 2 || !context.mounted) return;
 
   await _withLoading(context, () async {
-    final out = await ref.read(pdfOpsServiceProvider).merge(paths);
+    final out = await ref.read(pdfOpsServiceProvider).merge(
+          ordered.map((d) => d.path).toList(),
+        );
     if (!context.mounted) return;
     await _finishWithImport(context, ref, out, name: 'Merged.pdf');
   });
 }
 
 Future<void> runSplitFlow(BuildContext context, WidgetRef ref) async {
-  final path = await _pickSinglePdf();
-  if (path == null || !context.mounted) return;
+  final picked = await _pickFromLibrary(context, title: 'Split PDF');
+  if (picked == null || picked.isEmpty || !context.mounted) return;
+  final doc = picked.first;
 
-  final pageCount = await ref.read(pdfOpsServiceProvider).pageCount(path);
-  final startCtrl = TextEditingController(text: '1');
-  final endCtrl = TextEditingController(text: '$pageCount');
+  final count = doc.pageCount ??
+      await ref.read(pdfOpsServiceProvider).pageCount(doc.path);
+  if (!context.mounted) return;
+  if (count < 2) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Need at least 2 pages to split.')),
+    );
+    return;
+  }
 
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Split by page range'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('This file has $pageCount pages.'),
-          const SizedBox(height: 12),
-          TextField(
-            controller: startCtrl,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'From page'),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: endCtrl,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'To page'),
-          ),
-        ],
+  final selected = await Navigator.of(context).push<List<int>>(
+    MaterialPageRoute(
+      builder: (_) => PageSelectToolScreen(
+        document: doc,
+        pageCount: count,
+        mode: PageSelectMode.split,
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, false),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(ctx, true),
-          child: const Text('Split'),
-        ),
-      ],
     ),
   );
-
-  if (confirmed != true || !context.mounted) return;
-  final start = int.tryParse(startCtrl.text) ?? 1;
-  final end = int.tryParse(endCtrl.text) ?? pageCount;
+  if (selected == null || selected.isEmpty || !context.mounted) return;
 
   await _withLoading(context, () async {
-    final outs = await ref.read(pdfOpsServiceProvider).split(
-      path,
-      ranges: [(start, end)],
-    );
+    final outs = await ref.read(pdfOpsServiceProvider).splitSelectedAndRest(
+          doc.path,
+          selected,
+        );
     if (!context.mounted || outs.isEmpty) return;
-    await _finishWithImport(context, ref, outs.first);
+    for (final out in outs) {
+      if (!context.mounted) return;
+      await _finishWithImport(context, ref, out);
+    }
   });
 }
 
 Future<void> runReorderFlow(BuildContext context, WidgetRef ref) async {
-  final path = await _pickSinglePdf();
-  if (path == null || !context.mounted) return;
-  final count = await ref.read(pdfOpsServiceProvider).pageCount(path);
-  var order = List<int>.generate(count, (i) => i + 1);
+  final picked = await _pickFromLibrary(context, title: 'Reorder pages');
+  if (picked == null || picked.isEmpty || !context.mounted) return;
+  final doc = picked.first;
 
-  final confirmed = await Navigator.of(context).push<bool>(
+  final count = doc.pageCount ??
+      await ref.read(pdfOpsServiceProvider).pageCount(doc.path);
+  if (!context.mounted) return;
+  if (count < 1) return;
+
+  final order = await Navigator.of(context).push<List<int>>(
     MaterialPageRoute(
-      builder: (_) => _ReorderPagesScreen(
-        initialOrder: order,
-        onChanged: (next) => order = next,
+      builder: (_) => ReorderPagesScreen(
+        document: doc,
+        pageCount: count,
       ),
     ),
   );
-  if (confirmed != true || !context.mounted) return;
+  if (order == null || !context.mounted) return;
 
   await _withLoading(context, () async {
-    final out = await ref.read(pdfOpsServiceProvider).reorder(path, order);
+    final out = await ref.read(pdfOpsServiceProvider).reorder(doc.path, order);
     if (!context.mounted) return;
     await _finishWithImport(context, ref, out);
   });
 }
 
 Future<void> runDeletePagesFlow(BuildContext context, WidgetRef ref) async {
-  final path = await _pickSinglePdf();
-  if (path == null || !context.mounted) return;
-  final count = await ref.read(pdfOpsServiceProvider).pageCount(path);
-  final controller = TextEditingController();
+  final picked = await _pickFromLibrary(context, title: 'Delete pages');
+  if (picked == null || picked.isEmpty || !context.mounted) return;
+  final doc = picked.first;
 
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Delete pages'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('File has $count pages. Enter page numbers to remove, separated by commas (example: 2, 5, 7).'),
-          const SizedBox(height: 12),
-          TextField(
-            controller: controller,
-            decoration: const InputDecoration(hintText: '2, 5, 7'),
-          ),
-        ],
+  final count = doc.pageCount ??
+      await ref.read(pdfOpsServiceProvider).pageCount(doc.path);
+  if (!context.mounted) return;
+  if (count < 2) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Need at least 2 pages to delete some.')),
+    );
+    return;
+  }
+
+  final pages = await Navigator.of(context).push<List<int>>(
+    MaterialPageRoute(
+      builder: (_) => PageSelectToolScreen(
+        document: doc,
+        pageCount: count,
+        mode: PageSelectMode.delete,
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, false),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(ctx, true),
-          child: const Text('Delete'),
-        ),
-      ],
     ),
   );
-  if (confirmed != true || !context.mounted) return;
-
-  final pages = controller.text
-      .split(RegExp(r'[,\s]+'))
-      .map(int.tryParse)
-      .whereType<int>()
-      .toList();
-  if (pages.isEmpty) return;
+  if (pages == null || pages.isEmpty || !context.mounted) return;
 
   await _withLoading(context, () async {
-    final out = await ref.read(pdfOpsServiceProvider).deletePages(path, pages);
+    final out =
+        await ref.read(pdfOpsServiceProvider).deletePages(doc.path, pages);
     if (!context.mounted) return;
     await _finishWithImport(context, ref, out);
   });
@@ -218,32 +205,14 @@ Future<void> runDeletePagesFlow(BuildContext context, WidgetRef ref) async {
 Future<void> runPasswordFlow(BuildContext context, WidgetRef ref) async {
   final path = await _pickSinglePdf();
   if (path == null || !context.mounted) return;
-  final controller = TextEditingController();
 
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Set a password'),
-      content: TextField(
-        controller: controller,
-        obscureText: true,
-        decoration: const InputDecoration(labelText: 'Password'),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, false),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(ctx, true),
-          child: const Text('Protect'),
-        ),
-      ],
-    ),
+  final password = await showFolioPasswordDialog(
+    context,
+    title: 'Set a password',
+    message: 'Choose a password to encrypt this PDF. Keep it somewhere safe.',
+    confirmLabel: 'Protect',
   );
-  if (confirmed != true || !context.mounted) return;
-  final password = controller.text;
-  if (password.isEmpty) return;
+  if (password == null || password.isEmpty || !context.mounted) return;
 
   await _withLoading(context, () async {
     final out = await ref.read(pdfOpsServiceProvider).protectWithPassword(
@@ -297,74 +266,4 @@ Future<void> runExportImagesFlow(BuildContext context, WidgetRef ref) async {
       SnackBar(content: Text('Exported ${outs.length} image(s).')),
     );
   });
-}
-
-class _ReorderPagesScreen extends StatefulWidget {
-  const _ReorderPagesScreen({
-    required this.initialOrder,
-    required this.onChanged,
-  });
-
-  final List<int> initialOrder;
-  final ValueChanged<List<int>> onChanged;
-
-  @override
-  State<_ReorderPagesScreen> createState() => _ReorderPagesScreenState();
-}
-
-class _ReorderPagesScreenState extends State<_ReorderPagesScreen> {
-  late List<int> _order;
-
-  @override
-  void initState() {
-    super.initState();
-    _order = [...widget.initialOrder];
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Reorder pages'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              widget.onChanged(_order);
-              Navigator.pop(context, true);
-            },
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-      body: ReorderableListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _order.length,
-        onReorder: (oldIndex, newIndex) {
-          setState(() {
-            if (newIndex > oldIndex) newIndex -= 1;
-            final item = _order.removeAt(oldIndex);
-            _order.insert(newIndex, item);
-            widget.onChanged(_order);
-          });
-        },
-        itemBuilder: (context, index) {
-          final page = _order[index];
-          return Card(
-            key: ValueKey('page-$page-$index'),
-            margin: const EdgeInsets.only(bottom: 8),
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor:
-                    Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
-                foregroundColor: Theme.of(context).colorScheme.primary,
-                child: Text('$page'),
-              ),
-              title: Text('Page $page'),
-              trailing: const Icon(Icons.drag_handle),
-            ),
-          );
-        },
-      ),
-    );
-  }
 }

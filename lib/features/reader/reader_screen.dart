@@ -6,10 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:phosphor_flutter/phosphor_flutter.dart';
+import 'package:syncfusion_flutter_core/theme.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_colors.dart';
+import '../../core/widgets/folio_password_field.dart';
 import '../../data/models/app_settings.dart';
 import '../../data/models/pdf_document_item.dart';
 import '../../providers/app_providers.dart';
@@ -48,6 +50,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   final List<PenStroke> _penStrokes = [];
 
   OverlayEntry? _selectionMenuEntry;
+  String? _pdfPassword;
+  bool _passwordPromptOpen = false;
 
   @override
   void initState() {
@@ -406,6 +410,34 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     await _openCanvasEdit();
   }
 
+  Future<void> _promptForPassword({required bool wrongPassword}) async {
+    if (_passwordPromptOpen || !mounted) return;
+    _passwordPromptOpen = true;
+    try {
+      final password = await showFolioPasswordDialog(
+        context,
+        title: 'Password required',
+        message: wrongPassword
+            ? 'That password did not work. Try again, or cancel to go back.'
+            : 'This PDF is protected. Enter the password to open it.',
+        confirmLabel: 'Unlock',
+        errorText: wrongPassword ? 'Incorrect password' : null,
+      );
+      if (!mounted) return;
+      if (password == null) {
+        // Close / Cancel — leave the blank failed viewer.
+        Navigator.of(context).pop();
+        return;
+      }
+      setState(() {
+        _pdfPassword = password;
+        _pdfKey = GlobalKey<SfPdfViewerState>();
+      });
+    } finally {
+      _passwordPromptOpen = false;
+    }
+  }
+
   void _showAnnotSheet() {
     showModalBottomSheet<void>(
       context: context,
@@ -521,64 +553,83 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     // Keep the viewer as the Scaffold body (no Stack overlays on top of it).
     // Floating Stack layers were leaving Syncfusion page tiles unpainted on
     // some MIUI devices even after onDocumentLoaded fired.
-    Widget viewer = SfPdfViewer.file(
-      file,
-      key: _pdfKey,
-      controller: _controller,
-      pageLayoutMode: _layoutMode,
-      initialPageNumber: _currentPage,
-      canShowScrollHead: true,
-      canShowPaginationDialog: true,
-      canShowPasswordDialog: true,
-      enableDoubleTapZooming: true,
-      enableTextSelection: true,
-      canShowTextSelectionMenu: false,
-      onTextSelectionChanged: (details) {
-        if (details.selectedText != null &&
-            details.selectedText!.isNotEmpty &&
-            details.globalSelectedRegion != null) {
-          // Defer so Syncfusion finishes laying out selection handles.
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            if (details.selectedText == null ||
-                details.globalSelectedRegion == null) {
-              return;
-            }
-            _showSelectionMenu(details);
+    final scaffoldBg = Theme.of(context).scaffoldBackgroundColor;
+    Widget viewer = SfPdfViewerTheme(
+      data: SfPdfViewerThemeData(backgroundColor: scaffoldBg),
+      child: SfPdfViewer.file(
+        file,
+        key: _pdfKey,
+        controller: _controller,
+        pageLayoutMode: _layoutMode,
+        initialPageNumber: _currentPage,
+        canShowScrollHead: true,
+        canShowPaginationDialog: true,
+        canShowPasswordDialog: false,
+        password: _pdfPassword,
+        enableDoubleTapZooming: true,
+        enableTextSelection: true,
+        canShowTextSelectionMenu: false,
+        onTextSelectionChanged: (details) {
+          if (details.selectedText != null &&
+              details.selectedText!.isNotEmpty &&
+              details.globalSelectedRegion != null) {
+            // Defer so Syncfusion finishes laying out selection handles.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              if (details.selectedText == null ||
+                  details.globalSelectedRegion == null) {
+                return;
+              }
+              _showSelectionMenu(details);
+            });
+          } else {
+            _removeSelectionMenu();
+          }
+        },
+        onDocumentLoaded: (details) {
+          debugPrint(
+            'PDF loaded: ${details.document.pages.count} pages from ${widget.document.path}',
+          );
+          if (!mounted) return;
+          setState(() {
+            _pageCount = details.document.pages.count;
+            _currentPage = _controller.pageNumber;
           });
-        } else {
-          _removeSelectionMenu();
-        }
-      },
-      onDocumentLoaded: (details) {
-        debugPrint(
-          'PDF loaded: ${details.document.pages.count} pages from ${widget.document.path}',
-        );
-        if (!mounted) return;
-        setState(() {
-          _pageCount = details.document.pages.count;
-          _currentPage = _controller.pageNumber;
-        });
-      },
-      onDocumentLoadFailed: (details) {
-        debugPrint('PDF load failed: ${details.error} — ${details.description}');
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              details.description.isNotEmpty
-                  ? details.description
-                  : details.error,
+        },
+        onDocumentLoadFailed: (details) {
+          debugPrint(
+            'PDF load failed: ${details.error} — ${details.description}',
+          );
+          if (!mounted) return;
+          final blob =
+              '${details.error} ${details.description}'.toLowerCase();
+          final isPasswordIssue = blob.contains('password') ||
+              blob.contains('encrypt') ||
+              blob.contains('security');
+          if (isPasswordIssue) {
+            // Don't snackbar empty-password failures — ask for a password.
+            _promptForPassword(
+              wrongPassword: _pdfPassword != null && _pdfPassword!.isNotEmpty,
+            );
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                details.description.isNotEmpty
+                    ? details.description
+                    : details.error,
+              ),
             ),
-          ),
-        );
-      },
-      onPageChanged: (details) {
-        _removeSelectionMenu();
-        setState(() => _currentPage = details.newPageNumber);
-        _persistPage();
-      },
-      onAnnotationAdded: (_) => HapticFeedback.selectionClick(),
+          );
+        },
+        onPageChanged: (details) {
+          _removeSelectionMenu();
+          setState(() => _currentPage = details.newPageNumber);
+          _persistPage();
+        },
+        onAnnotationAdded: (_) => HapticFeedback.selectionClick(),
+      ),
     );
 
     if (_nightMode) {
@@ -616,7 +667,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xFFE8E6E1),
+      backgroundColor: scaffoldBg,
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

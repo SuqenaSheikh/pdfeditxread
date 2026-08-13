@@ -45,13 +45,13 @@ class ToolsScreen extends ConsumerWidget {
           _ToolCard(
             icon: PhosphorIconsRegular.scissors,
             title: 'Split PDF',
-            subtitle: 'Cut a file into page ranges',
+            subtitle: 'Split selected pages into a second file',
             onTap: () => runSplitFlow(context, ref),
           ),
           _ToolCard(
             icon: PhosphorIconsRegular.arrowsDownUp,
             title: 'Reorder pages',
-            subtitle: 'Drag thumbnails into a new order',
+            subtitle: 'Drag pages and preview as you go',
             onTap: () => runReorderFlow(context, ref),
           ),
           _ToolCard(

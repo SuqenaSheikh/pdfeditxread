@@ -140,3 +140,6 @@ final themeModeProvider = Provider<ThemeMode>((ref) {
       return ThemeMode.system;
   }
 });
+
+/// Session-only skip of onboarding (does not persist). Cleared on process restart.
+final onboardingSkippedThisSessionProvider = StateProvider<bool>((ref) => false);
