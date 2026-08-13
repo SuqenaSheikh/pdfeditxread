@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 
 /// One editable text region on a PDF page (Canva-style overlay).
 ///
-/// [fontSize] is captured once from the PDF text layer. Edits to the string
-/// must never change it — only the explicit +/- toolbar controls do.
+/// [fontSize] / [lockedFontSize] are captured once from the PDF text layer.
+/// Typing must never change size — only the +/- toolbar does.
 class PdfEditableBox {
   PdfEditableBox({
     required this.id,
@@ -24,7 +24,10 @@ class PdfEditableBox {
        _fontSize = fontSize.clamp(6.0, 96.0),
        _bold = bold,
        _italic = italic,
-       lockedFontSize = fontSize.clamp(6.0, 96.0);
+       lockedFontSize = fontSize.clamp(6.0, 96.0),
+       originalText = text,
+       originalBold = bold,
+       originalItalic = italic;
 
   final String id;
   final int pageIndex;
@@ -32,7 +35,12 @@ class PdfEditableBox {
   /// Fixed cover rect used when saving — never grows across re-edits.
   final Rect originalBounds;
 
-  /// Size captured at extraction (reference only).
+  /// Exact text at extraction — used so Save only writes real edits.
+  final String originalText;
+  final bool originalBold;
+  final bool originalItalic;
+
+  /// Size captured at extraction.
   final double lockedFontSize;
 
   Rect _bounds;
@@ -45,20 +53,17 @@ class PdfEditableBox {
   final bool isNew;
 
   bool deleted = false;
-  bool dirty = false;
 
   Rect get bounds => _bounds;
   set bounds(Rect value) {
     if (_bounds == value) return;
     _bounds = value;
-    dirty = true;
   }
 
   String get text => _text;
   set text(String value) {
     if (_text == value) return;
     _text = value;
-    dirty = true;
   }
 
   double get fontSize => _fontSize;
@@ -68,47 +73,57 @@ class PdfEditableBox {
     final next = value.clamp(6.0, 96.0);
     if (_fontSize == next) return;
     _fontSize = next;
-    dirty = true;
   }
 
   bool get bold => _bold;
   set bold(bool value) {
     if (_bold == value) return;
     _bold = value;
-    dirty = true;
   }
 
   bool get italic => _italic;
   set italic(bool value) {
     if (_italic == value) return;
     _italic = value;
-    dirty = true;
   }
 
-  bool get needsSave =>
-      deleted || dirty || (isNew && !deleted && text.trim().isNotEmpty);
+  /// True only when the user actually changed this box (not the whole page).
+  bool get needsSave {
+    if (isNew) return !deleted && text.trim().isNotEmpty;
+    if (deleted) return true;
+    if (text != originalText) return true;
+    if (bold != originalBold || italic != originalItalic) return true;
+    if ((fontSize - lockedFontSize).abs() > 0.01) return true;
+    if ((bounds.left - originalBounds.left).abs() > 1.5) return true;
+    if ((bounds.top - originalBounds.top).abs() > 1.5) return true;
+    if ((bounds.width - originalBounds.width).abs() > 3) return true;
+    if ((bounds.height - originalBounds.height).abs() > 3) return true;
+    return false;
+  }
 
-  /// Grow height to fit [text] at the current font size; width stays fixed.
-  /// Does not change [fontSize].
-  void fitHeightToText({double lineHeightFactor = 1.25}) {
-    final avgCharW = math.max(fontSize * 0.5, 1.0);
-    final cols = math.max(1, (bounds.width / avgCharW).floor());
-    final wrappedLines = text.split('\n').fold<int>(0, (sum, line) {
-      if (line.isEmpty) return sum + 1;
-      return sum + math.max(1, (line.length / cols).ceil());
-    });
-    final needed =
-        math.max(1, wrappedLines) * fontSize * lineHeightFactor;
-    final minH = fontSize * lineHeightFactor;
-    final height = math.max(needed, minH);
-    if ((height - bounds.height).abs() > 0.5) {
-      bounds = Rect.fromLTWH(
-        bounds.left,
-        bounds.top,
-        bounds.width,
-        height,
-      );
+  /// UI helper: show “unsaved” chrome for this box.
+  bool get dirty => needsSave;
+
+  /// Font size that visually fits [originalBounds] — never larger than the PDF slot.
+  /// Used for on-screen editing AND for save, so text cannot grow on select/save.
+  double fontSizeFittingSlot() {
+    final slot = isNew ? bounds : originalBounds;
+    final rawLines = text.split('\n');
+    // Estimate wrap: ~0.5em average char width in the slot.
+    final avgChar = math.max(lockedFontSize * 0.5, 1.0);
+    final cols = math.max(1, (slot.width / avgChar).floor());
+    var wrapped = 0;
+    for (final line in rawLines) {
+      if (line.isEmpty) {
+        wrapped += 1;
+        continue;
+      }
+      wrapped += math.max(1, (line.length / cols).ceil());
     }
+    wrapped = wrapped.clamp(1, 80);
+    final fromHeight = slot.height / wrapped / 1.15;
+    // Never exceed the extracted size — only shrink to fit the slot.
+    return math.min(lockedFontSize, fromHeight).clamp(6.0, lockedFontSize);
   }
 }
 

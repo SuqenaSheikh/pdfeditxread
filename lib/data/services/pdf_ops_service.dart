@@ -430,18 +430,6 @@ class PdfOpsService {
     return (fontName: 'Helvetica', fontSize: 0, styles: <PdfFontStyle>[]);
   }
 
-  PdfFont _fontForBox(
-    PdfEmbeddedFontCatalog catalog,
-    PdfEditableBox box,
-  ) {
-    return catalog.resolvePdfFont(
-      fontName: box.fontName,
-      size: box.fontSize.clamp(6.0, 96.0),
-      bold: box.bold,
-      italic: box.italic,
-    );
-  }
-
   Future<String> buildPdfFromImages(
     List<String> imagePaths, {
     String? outputName,
@@ -794,28 +782,31 @@ class PdfOpsService {
     );
   }
 
-  /// Apply dirty / new / deleted boxes. Font size is taken from each box as-is.
+  /// Apply only boxes the user actually changed.
+  ///
+  /// Critical: never rewrite other paragraphs on the page. Full-page redraw
+  /// was destroying layout for tiny edits (e.g. removing a period).
   Future<String> applyEditableBoxes({
     required String path,
     required List<PdfEditableBox> boxes,
     Color coverColor = const Color(0xFFFFFFFF),
   }) async {
-    final toWrite = boxes.where((b) => b.needsSave).toList(growable: false);
+    final toWrite =
+        boxes.where((b) => b.needsSave).toList(growable: false);
     if (toWrite.isEmpty) {
       throw ArgumentError('No text changes to save.');
     }
 
-    // Stable paint order: top→bottom so neighbors don't randomly stack.
     toWrite.sort((a, b) {
       final p = a.pageIndex.compareTo(b.pageIndex);
       if (p != 0) return p;
-      return a.bounds.top.compareTo(b.bounds.top);
+      return a.originalBounds.top.compareTo(b.originalBounds.top);
     });
 
     final fileBytes = await File(path).readAsBytes();
     final catalog = PdfEmbeddedFontCatalog.fromPdfBytes(fileBytes);
-
     final doc = PdfDocument(inputBytes: fileBytes);
+
     try {
       final coverBrush = PdfSolidBrush(
         PdfColor(
@@ -830,83 +821,56 @@ class PdfOpsService {
         if (box.pageIndex < 0 || box.pageIndex >= doc.pages.count) continue;
         final g = doc.pages[box.pageIndex].graphics;
 
-        if (box.deleted || box.text.trim().isEmpty) {
-          if (!box.isNew) {
-            final padded = Rect.fromLTRB(
-              box.originalBounds.left - 0.8,
-              box.originalBounds.top - 0.8,
-              box.originalBounds.right + 1.0,
-              box.originalBounds.bottom + 1.0,
-            );
-            g.drawRectangle(bounds: padded, brush: coverBrush);
-          }
-          continue;
+        // Erase ONLY this paragraph's original glyphs.
+        if (!box.isNew) {
+          final cover = box.originalBounds;
+          g.drawRectangle(
+            bounds: Rect.fromLTRB(
+              cover.left - 0.5,
+              cover.top - 0.5,
+              cover.right + 0.5,
+              cover.bottom + 0.5,
+            ),
+            brush: coverBrush,
+          );
         }
 
-        final font = _fontForBox(catalog, box);
+        if (box.deleted || box.text.trim().isEmpty) continue;
 
-        final multiline = box.text.contains('\n');
+        // Always paint at a size that fits the original slot — never grow.
+        final fontSize = box.isNew
+            ? box.fontSize.clamp(6.0, 96.0)
+            : box.fontSizeFittingSlot();
+        final font = catalog.resolvePdfFont(
+          fontName: box.fontName,
+          size: fontSize,
+          bold: box.bold,
+          italic: box.italic,
+        );
+
         final format = PdfStringFormat(
           alignment: PdfTextAlignment.left,
-          lineAlignment: multiline
-              ? PdfVerticalAlignment.top
-              : PdfVerticalAlignment.middle,
-          wordWrap:
-              multiline ? PdfWordWrapType.word : PdfWordWrapType.none,
+          lineAlignment: PdfVerticalAlignment.top,
+          wordWrap: PdfWordWrapType.word,
         )
-          ..lineLimit = multiline
-          ..noClip = true
+          ..lineLimit = true
+          ..noClip = false
           ..characterSpacing = 0
           ..wordSpacing = 0;
 
-        // Current on-screen slot (move/resize updates bounds).
-        final slot = box.bounds;
-        final slotWidth = math.max(
-          slot.width,
-          box.isNew ? slot.width : box.originalBounds.width,
-        );
-        final slotHeight = math.max(
-          slot.height,
-          box.isNew ? slot.height : box.originalBounds.height,
-        );
-
-        final measured = font.measureString(
-          box.text,
-          layoutArea: Size(
-            multiline ? math.max(slotWidth, 8) : 10000,
-            multiline ? 10000 : box.fontSize * 2,
-          ),
-          format: format,
-        );
-
-        // Expand right when text is longer — never wrap a one-line cell.
-        final paintBounds = Rect.fromLTWH(
+        // Stay strictly inside the original paragraph slot.
+        final slot = box.isNew ? box.bounds : box.originalBounds;
+        final drawBounds = Rect.fromLTWH(
           slot.left,
           slot.top,
-          math.max(slotWidth, measured.width + 0.5),
-          multiline
-              ? math.max(slotHeight, measured.height + 0.5)
-              : math.max(slotHeight, measured.height),
-        );
-
-        // White-out original glyphs + any expanded redraw area.
-        final erase = box.isNew
-            ? paintBounds
-            : box.originalBounds.expandToInclude(paintBounds);
-        g.drawRectangle(
-          bounds: Rect.fromLTRB(
-            erase.left - 0.8,
-            erase.top - 0.8,
-            erase.right + 1.2,
-            erase.bottom + 1.0,
-          ),
-          brush: coverBrush,
+          math.max(slot.width, 8),
+          math.max(slot.height, 4),
         );
 
         g.drawString(
           box.text,
           font,
-          bounds: paintBounds,
+          bounds: drawBounds,
           brush: brush,
           format: format,
         );

@@ -154,7 +154,7 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
       fontSize: 14,
       fontName: 'Helvetica',
       isNew: true,
-    )..dirty = true;
+    );
     setState(() {
       _boxes.add(box);
       _selectedId = box.id;
@@ -170,7 +170,6 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
         _boxes.removeWhere((b) => b.id == box.id);
       } else {
         box.deleted = true;
-        box.dirty = true;
       }
       _selectedId = null;
     });
@@ -183,16 +182,16 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('Unsaved changes'),
         content: const Text(
-          'You have unsaved text edits. Save before leaving, or exit without saving?',
+          'Your edits are not saved yet. Save the PDF, or discard and exit?',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, 'cancel'),
-            child: const Text('Cancel'),
+            child: const Text('Keep editing'),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, 'exit'),
-            child: const Text('Exit'),
+            child: const Text('Discard'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, 'save'),
@@ -203,7 +202,7 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
     );
     if (choice == 'cancel' || choice == null) return false;
     if (choice == 'exit') return true;
-    // Save pops this route with the new document — don't pop again.
+    // Only saves when the user explicitly taps Save in this dialog.
     await _save(closeAfter: true);
     return false;
   }
@@ -230,9 +229,6 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
           );
       if (!mounted) return false;
       HapticFeedback.mediumImpact();
-      for (final b in _boxes) {
-        b.dirty = false;
-      }
       if (closeAfter) {
         Navigator.of(context).pop(item);
       }
@@ -268,7 +264,9 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
             children: [
               const Text('Edit PDF'),
               Text(
-                _hasUnsaved ? 'Unsaved changes' : 'Tap a text box to edit',
+                _hasUnsaved
+                    ? 'Unsaved — tap save when ready'
+                    : 'Pinch to zoom · tap a paragraph to edit',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -345,7 +343,6 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
                             selected.setFontSizeFromToolbar(
                               selected.fontSize - 1,
                             );
-                            selected.fitHeightToText();
                           }),
                           icon: const Icon(PhosphorIconsRegular.minus),
                         ),
@@ -359,7 +356,6 @@ class _PdfCanvasEditScreenState extends ConsumerState<PdfCanvasEditScreen> {
                             selected.setFontSizeFromToolbar(
                               selected.fontSize + 1,
                             );
-                            selected.fitHeightToText();
                           }),
                           icon: const Icon(PhosphorIconsRegular.plus),
                         ),
@@ -475,44 +471,55 @@ class _EditablePageCanvas extends StatelessWidget {
                     ),
                   ],
                 ),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    if (image != null)
-                      Positioned.fill(
-                        child: RawImage(
-                          image: image,
-                          fit: BoxFit.fill,
-                        ),
-                      )
-                    else
-                      const Center(
-                        child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    for (final box in (() {
-                      // Selected box on top so Transparent neighbors don't steal taps.
-                      final ordered = List<PdfEditableBox>.from(boxes);
-                      if (selectedId != null) {
-                        ordered.sort((a, b) {
-                          if (a.id == selectedId) return 1;
-                          if (b.id == selectedId) return -1;
-                          return 0;
-                        });
-                      }
-                      return ordered;
-                    })())
-                      _TextBoxOverlay(
-                        box: box,
-                        scale: scale,
-                        selected: box.id == selectedId,
-                        onSelect: () => onSelect(box.id),
-                        onChanged: onChanged,
-                      ),
-                  ],
+                // Pinch / pan zoom so the user can focus a word without
+                // enlarging the paragraph's real font size.
+                child: InteractiveViewer(
+                  minScale: 1.0,
+                  maxScale: 5.0,
+                  boundaryMargin: const EdgeInsets.all(64),
+                  clipBehavior: Clip.hardEdge,
+                  child: SizedBox(
+                    width: maxW,
+                    height: displayH,
+                    child: Stack(
+                      clipBehavior: Clip.hardEdge,
+                      children: [
+                        if (image != null)
+                          Positioned.fill(
+                            child: RawImage(
+                              image: image,
+                              fit: BoxFit.fill,
+                            ),
+                          )
+                        else
+                          const Center(
+                            child: SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        for (final box in (() {
+                          final ordered = List<PdfEditableBox>.from(boxes);
+                          if (selectedId != null) {
+                            ordered.sort((a, b) {
+                              if (a.id == selectedId) return 1;
+                              if (b.id == selectedId) return -1;
+                              return 0;
+                            });
+                          }
+                          return ordered;
+                        })())
+                          _TextBoxOverlay(
+                            box: box,
+                            scale: scale,
+                            selected: box.id == selectedId,
+                            onSelect: () => onSelect(box.id),
+                            onChanged: onChanged,
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -620,40 +627,23 @@ class _TextBoxOverlayState extends State<_TextBoxOverlay> {
   Widget build(BuildContext context) {
     final box = widget.box;
     final s = widget.scale;
-    final glyphW = math.max(box.bounds.width * s, 8.0);
-    final glyphH = math.max(box.bounds.height * s, 8.0);
-    // Cap display size to the glyph slot so text cannot spill onto neighbors.
-    final fontSize = math
-        .min(box.fontSize * s, glyphH)
-        .clamp(5.0, 96.0);
+    final slot = box.isNew ? box.bounds : box.originalBounds;
 
-    // Editor chrome only while selected. Dirty+deselected → in-place preview.
+    // Fit Flutter text to the PDF glyph slot so select/edit never looks bigger.
+    final fontSize = (box.fontSizeFittingSlot() * s).clamp(5.0, 96.0);
+    final width = math.max(slot.width * s, 8.0);
+    final height = math.max(slot.height * s, 8.0);
+    final left = slot.left * s;
+    final top = slot.top * s;
+
     final isEditing = widget.selected;
-    final showPaintedText = isEditing || box.dirty || box.isNew;
-    final multiline = box.text.contains('\n');
+    // Mere selection keeps PDF glyphs visible (true size). Paint only after edit.
+    final showPaintedText = box.dirty || box.isNew;
 
     final style = _pdfLikeStyle(
       fontSize,
       color: AppColors.lightPrimaryText,
     );
-    final painter = TextPainter(
-      text: TextSpan(
-        text: box.text.isEmpty ? ' ' : box.text,
-        style: style,
-      ),
-      textDirection: TextDirection.ltr,
-      maxLines: multiline ? null : 1,
-    )..layout(maxWidth: multiline ? glyphW : 10000);
-
-    // Grow right only when text is longer; keep the original top-left anchor.
-    // While editing, use a comfortable tap height so the keyboard can open.
-    final width = math.max(glyphW, painter.width + (isEditing ? 2.0 : 0.5));
-    final height = isEditing
-        ? math.max(math.max(glyphH, multiline ? painter.height : glyphH), 32.0)
-        : (multiline ? math.max(glyphH, painter.height) : glyphH);
-
-    final left = box.bounds.left * s;
-    final top = box.bounds.top * s;
 
     final field = MediaQuery(
       data: MediaQuery.of(context).copyWith(
@@ -677,14 +667,17 @@ class _TextBoxOverlayState extends State<_TextBoxOverlay> {
         child: TextField(
           controller: _controller,
           focusNode: _focus,
-          maxLines: multiline ? null : 1,
-          expands: multiline,
+          maxLines: null,
+          expands: true,
           cursorColor: AppColors.lightAccent,
-          textAlignVertical: TextAlignVertical.center,
-          keyboardType:
-              multiline ? TextInputType.multiline : TextInputType.text,
+          textAlignVertical: TextAlignVertical.top,
+          keyboardType: TextInputType.multiline,
           enableInteractiveSelection: true,
-          style: style,
+          style: style.copyWith(
+            color: showPaintedText
+                ? AppColors.lightPrimaryText
+                : Colors.transparent,
+          ),
           decoration: const InputDecoration(
             isDense: true,
             filled: false,
@@ -712,15 +705,13 @@ class _TextBoxOverlayState extends State<_TextBoxOverlay> {
       width: width,
       height: height,
       child: Stack(
-        clipBehavior: Clip.none,
+        clipBehavior: Clip.hardEdge,
         children: [
           ClipRect(
             child: ColoredBox(
               color: showPaintedText
                   ? AppColors.pdfPaper
                   : Colors.transparent,
-              // Important: do NOT wrap the TextField in a GestureDetector that
-              // steals taps — that blocked keyboard/editing after selection.
               child: isEditing
                   ? field
                   : GestureDetector(
@@ -728,12 +719,12 @@ class _TextBoxOverlayState extends State<_TextBoxOverlay> {
                       onTap: widget.onSelect,
                       child: showPaintedText
                           ? Align(
-                              alignment: Alignment.centerLeft,
+                              alignment: Alignment.topLeft,
                               child: Text(
                                 box.text,
-                                maxLines: multiline ? null : 1,
-                                softWrap: multiline,
-                                overflow: TextOverflow.visible,
+                                maxLines: null,
+                                softWrap: true,
+                                overflow: TextOverflow.clip,
                                 style: style,
                               ),
                             )
@@ -751,55 +742,6 @@ class _TextBoxOverlayState extends State<_TextBoxOverlay> {
                       width: 1.5,
                     ),
                     borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-            ),
-          // Drag from the top edge only — keeps typing gestures free.
-          if (isEditing)
-            Positioned(
-              left: 0,
-              right: 18,
-              top: 0,
-              height: 10,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanUpdate: (d) {
-                  box.bounds = box.bounds.shift(
-                    Offset(d.delta.dx / s, d.delta.dy / s),
-                  );
-                  widget.onChanged();
-                },
-                child: const ColoredBox(color: Color(0x00000000)),
-              ),
-            ),
-          if (isEditing)
-            Positioned(
-              right: -8,
-              bottom: -8,
-              child: GestureDetector(
-                onPanUpdate: (d) {
-                  final next = Rect.fromLTWH(
-                    box.bounds.left,
-                    box.bounds.top,
-                    (box.bounds.width + d.delta.dx / s).clamp(20.0, 2000.0),
-                    (box.bounds.height + d.delta.dy / s).clamp(12.0, 2000.0),
-                  );
-                  box.bounds = next;
-                  widget.onChanged();
-                },
-                child: Container(
-                  width: 18,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    color: AppColors.lightAccent,
-                    borderRadius: BorderRadius.circular(2),
-                    border: Border.all(color: Colors.white, width: 1),
-                  ),
-                  child: const Icon(
-                    Icons.south_east,
-                    size: 12,
-                    color: Colors.white,
                   ),
                 ),
               ),
