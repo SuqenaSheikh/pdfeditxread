@@ -488,32 +488,67 @@ class PdfOpsService {
   Future<String> buildPdfFromImages(
     List<String> imagePaths, {
     String? outputName,
-    List<String>? ocrTextPerPage,
+    List<List<OcrSpan>>? ocrWordsPerPage,
   }) async {
+    final fontCache = <int, PdfStandardFont>{};
+
+    PdfFont fontFor(double size) {
+      final key = math.max(4, size.round());
+      return fontCache.putIfAbsent(
+        key,
+        () => PdfStandardFont(PdfFontFamily.helvetica, key.toDouble()),
+      );
+    }
+
     final doc = PdfDocument();
+    doc.pageSettings.margins.all = 0;
     try {
       for (var i = 0; i < imagePaths.length; i++) {
         final bytes = await File(imagePaths[i]).readAsBytes();
         final image = PdfBitmap(bytes);
+        const maxWidth = 595.0;
+        final pageW = maxWidth;
+        final pageH = maxWidth * image.height / math.max(image.width, 1);
+        doc.pageSettings.size = Size(pageW, pageH);
         final page = doc.pages.add();
         final pageSize = page.getClientSize();
+
+        final ocr = (ocrWordsPerPage != null && i < ocrWordsPerPage.length)
+            ? ocrWordsPerPage[i]
+            : const <OcrSpan>[];
+        if (ocr.isNotEmpty) {
+          final sx = pageSize.width / image.width;
+          final sy = pageSize.height / image.height;
+          final format = PdfStringFormat(
+            alignment: PdfTextAlignment.left,
+            lineAlignment: PdfVerticalAlignment.middle,
+            wordWrap: PdfWordWrapType.none,
+          )
+            ..lineLimit = false
+            ..noClip = true;
+          // Draw searchable text first, then the scan image on top so the
+          // page looks like a photo but Find / select still work.
+          for (final span in ocr) {
+            final bounds = Rect.fromLTWH(
+              span.bounds.left * sx,
+              span.bounds.top * sy,
+              math.max(span.bounds.width * sx, 2),
+              math.max(span.bounds.height * sy, 4),
+            );
+            page.graphics.drawString(
+              span.text,
+              fontFor(bounds.height * 0.92),
+              bounds: bounds,
+              brush: PdfBrushes.black,
+              format: format,
+            );
+          }
+        }
+
         page.graphics.drawImage(
           image,
           Rect.fromLTWH(0, 0, pageSize.width, pageSize.height),
         );
-
-        if (ocrTextPerPage != null &&
-            i < ocrTextPerPage.length &&
-            ocrTextPerPage[i].trim().isNotEmpty) {
-          page.graphics.setTransparency(0.01);
-          page.graphics.drawString(
-            ocrTextPerPage[i],
-            PdfStandardFont(PdfFontFamily.helvetica, 8),
-            bounds: Rect.fromLTWH(0, 0, pageSize.width, pageSize.height),
-            brush: PdfBrushes.black,
-          );
-          page.graphics.setTransparency(1);
-        }
       }
       final out = Uint8List.fromList(doc.saveSync());
       return _writeOutput(
@@ -1120,4 +1155,12 @@ class _LineInfo {
       italic: sorted.first.italic,
     );
   }
+}
+
+/// One OCR word (or token) in image-pixel coordinates.
+class OcrSpan {
+  const OcrSpan({required this.text, required this.bounds});
+
+  final String text;
+  final Rect bounds;
 }

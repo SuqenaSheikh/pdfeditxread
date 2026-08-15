@@ -56,16 +56,20 @@ Future<void> startScanFlow(BuildContext context, WidgetRef ref) async {
   showDialog<void>(
     context: context,
     barrierDismissible: false,
-    builder: (_) => const Center(
+    builder: (_) => Center(
       child: Card(
         child: Padding(
-          padding: EdgeInsets.all(24),
+          padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Building your PDF…'),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                runOcr
+                    ? 'Scanning and reading text…'
+                    : 'Building your PDF…',
+              ),
             ],
           ),
         ),
@@ -74,17 +78,27 @@ Future<void> startScanFlow(BuildContext context, WidgetRef ref) async {
   );
 
   try {
-    final path = await scan.scanToPdf(runOcr: runOcr);
+    final result = await scan.scanToPdf(runOcr: runOcr);
     if (!context.mounted) return;
     Navigator.of(context).pop(); // loading
 
-    if (path == null) return;
+    if (result == null) return;
 
     final item = await ref.read(libraryProvider.notifier).importPath(
-          path,
-          name: 'Scan ${DateTime.now().month}-${DateTime.now().day}.pdf',
+          result.path,
+          name: result.ocrEnabled
+              ? 'Scan OCR ${DateTime.now().month}-${DateTime.now().day}.pdf'
+              : 'Scan ${DateTime.now().month}-${DateTime.now().day}.pdf',
         );
     if (!context.mounted) return;
+
+    final message = !result.ocrEnabled
+        ? 'Saved as an image PDF. Text is not searchable.'
+        : result.ocrWordCount == 0
+            ? 'No text was recognized. Saved as an image PDF.'
+            : 'OCR added ${result.ocrWordCount} words. Use search to find them.';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => ReaderScreen(document: item)),
     );
