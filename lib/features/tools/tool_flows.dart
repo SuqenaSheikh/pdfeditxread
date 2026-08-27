@@ -6,7 +6,9 @@ import 'package:path/path.dart' as p;
 
 import '../../core/widgets/folio_password_field.dart';
 import '../../data/models/pdf_document_item.dart';
+import '../../data/services/media_save_service.dart';
 import '../../providers/app_providers.dart';
+import 'export_images_result_sheet.dart';
 import 'merge_order_screen.dart';
 import 'page_select_tool_screen.dart';
 import 'reorder_pages_screen.dart';
@@ -248,22 +250,37 @@ Future<void> runExportImagesFlow(BuildContext context, WidgetRef ref) async {
   );
   if (format == null || !context.mounted) return;
 
-  await _withLoading(context, () async {
-    final outs = await ref.read(pdfOpsServiceProvider).exportPagesAsImages(
-          path,
-          format: format,
-        );
+  List<String> outs = const [];
+  var savedToGallery = 0;
+  try {
+    await _withLoading(context, () async {
+      outs = await ref.read(pdfOpsServiceProvider).exportPagesAsImages(
+            path,
+            format: format,
+          );
+      if (outs.isEmpty) return;
+      savedToGallery = await MediaSaveService().saveImagesToGallery(outs);
+    });
+  } catch (e) {
     if (!context.mounted) return;
-    HapticFeedback.mediumImpact();
-    if (outs.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No images were exported.')),
-      );
-      return;
-    }
-    await ref.read(libraryServiceProvider).sharePath(outs.first);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Exported ${outs.length} image(s).')),
+      SnackBar(content: Text('Could not export images: $e')),
     );
-  });
+    return;
+  }
+  if (!context.mounted) return;
+  HapticFeedback.mediumImpact();
+  if (outs.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('No images were exported.')),
+    );
+    return;
+  }
+  await showModalBottomSheet<void>(
+    context: context,
+    builder: (ctx) => ExportImagesResultSheet(
+      paths: outs,
+      savedToGallery: savedToGallery >= outs.length,
+    ),
+  );
 }

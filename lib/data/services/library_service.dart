@@ -126,6 +126,42 @@ class LibraryService {
     );
   }
 
+  /// Saves a copy through the system Files UI (SAF / iOS document picker).
+  /// No broad storage permission is required.
+  ///
+  /// Returns `true` when the user picked a destination, `false` if cancelled.
+  Future<bool> downloadToDevice(PdfDocumentItem item) async {
+    final file = File(item.path);
+    if (!await file.exists()) {
+      throw StateError('This file is no longer on this device.');
+    }
+    final bytes = await file.readAsBytes();
+    var fileName = item.name.trim();
+    if (fileName.isEmpty) fileName = 'document.pdf';
+    if (!fileName.toLowerCase().endsWith('.pdf')) {
+      fileName = '$fileName.pdf';
+    }
+
+    try {
+      final savedPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save PDF',
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: const ['pdf'],
+        bytes: bytes,
+      );
+      return savedPath != null;
+    } catch (_) {
+      // If the save sheet is unavailable, fall back to the share sheet
+      // (also no extra storage permission).
+      await Share.shareXFiles(
+        [XFile(item.path, mimeType: 'application/pdf', name: fileName)],
+        subject: fileName,
+      );
+      return true;
+    }
+  }
+
   Future<void> sharePath(String path, {String? name}) async {
     await Share.shareXFiles(
       [

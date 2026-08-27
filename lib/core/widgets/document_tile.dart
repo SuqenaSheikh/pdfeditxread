@@ -13,6 +13,7 @@ class DocumentTile extends StatelessWidget {
     required this.onTap,
     this.onFavorite,
     this.onShare,
+    this.onDownload,
     this.onDelete,
     this.onRename,
     this.compact = false,
@@ -23,6 +24,7 @@ class DocumentTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onFavorite;
   final VoidCallback? onShare;
+  final VoidCallback? onDownload;
   final VoidCallback? onDelete;
   final VoidCallback? onRename;
   final bool compact;
@@ -160,6 +162,15 @@ class DocumentTile extends StatelessWidget {
                     onTap: () {
                       Navigator.pop(ctx);
                       onShare?.call();
+                    },
+                  ),
+                if (onDownload != null)
+                  ListTile(
+                    leading: const Icon(PhosphorIconsRegular.downloadSimple),
+                    title: const Text('Download'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      onDownload?.call();
                     },
                   ),
                 if (onDelete != null)

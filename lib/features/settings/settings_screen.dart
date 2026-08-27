@@ -29,16 +29,17 @@ class SettingsScreen extends ConsumerWidget {
                   onChanged: (m) =>
                       ref.read(settingsProvider.notifier).setThemeMode(m),
                 ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Night mode for PDFs'),
-                  subtitle: const Text(
-                    'Inverts page colors in the reader. App theme stays independent.',
-                  ),
-                  value: settings.nightModeEnabled,
-                  onChanged: (v) =>
-                      ref.read(settingsProvider.notifier).setNightMode(v),
-                ),
+                // Night mode inverts every color (blue → yellow, etc.).
+                // SwitchListTile(
+                //   contentPadding: EdgeInsets.zero,
+                //   title: const Text('Night mode for PDFs'),
+                //   subtitle: const Text(
+                //     'Inverts page colors in the reader. App theme stays independent.',
+                //   ),
+                //   value: settings.nightModeEnabled,
+                //   onChanged: (v) =>
+                //       ref.read(settingsProvider.notifier).setNightMode(v),
+                // ),
               ],
             ),
           ),
@@ -92,7 +93,7 @@ class SettingsScreen extends ConsumerWidget {
                   title: Text(settings.isPro ? 'Pro is active' : 'Upgrade to Pro'),
                   subtitle: Text(
                     settings.isPro
-                        ? 'Ads are off. TTS, text edit, delete, and lock are yours.'
+                        ? 'Ads are off. TTS, add text, delete, and lock are yours.'
                         : 'Unlock Pro features and remove every ad.',
                   ),
                   trailing: settings.isPro

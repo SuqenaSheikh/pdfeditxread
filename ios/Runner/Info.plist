@@ -49,6 +49,8 @@
 	<string>Folio needs the camera to scan documents into PDFs.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Folio can import images from your library when scanning.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Folio saves PDF pages you export as images to your photo library.</string>
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-3940256099942544~1458002511</string>
 	<key>SKAdNetworkItems</key>

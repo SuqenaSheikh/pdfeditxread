@@ -9,7 +9,6 @@ import 'package:phosphor_flutter/phosphor_flutter.dart';
 import 'package:syncfusion_flutter_core/theme.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 
-import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/widgets/folio_password_field.dart';
 import '../../data/models/app_settings.dart';
@@ -19,8 +18,9 @@ import '../pro/pro_paywall_screen.dart';
 import 'pen_overlay.dart';
 import 'pdf_canvas_edit_screen.dart';
 import 'selection_context_menu.dart';
-
-enum _AnnotTool { none, highlight, underline, strikethrough, pen }
+import 'widgets/reader_annot_sheet.dart';
+import 'widgets/reader_bookmarks_sheet.dart';
+import 'widgets/reader_search_bar.dart';
 
 class ReaderScreen extends ConsumerStatefulWidget {
   const ReaderScreen({super.key, required this.document});
@@ -40,12 +40,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   bool _ttsPlaying = false;
   bool _saving = false;
   bool _searching = false;
-  _AnnotTool _tool = _AnnotTool.none;
+  /// Unmount SfPdfViewer before Add text so Android PdfRenderer isn't opened twice.
+  bool _suspendViewer = false;
+  ReaderAnnotTool _tool = ReaderAnnotTool.none;
   Color _markupColor = const Color(0xFFF2B705);
   PdfTextSearchResult? _searchResult;
   int _currentPage = 1;
   int _pageCount = 0;
-  late bool _nightMode;
+  // late bool _nightMode;
   late PdfPageLayoutMode _layoutMode;
   final List<PenStroke> _penStrokes = [];
 
@@ -57,7 +59,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   void initState() {
     super.initState();
     final settings = ref.read(settingsProvider);
-    _nightMode = settings.nightModeEnabled;
+    // Night mode inverts every color (blue → yellow). Keep it off.
+    // _nightMode = false; // settings.nightModeEnabled;
     _layoutMode = settings.readerLayout == ReaderLayoutMode.pageByPage
         ? PdfPageLayoutMode.single
         : PdfPageLayoutMode.continuous;
@@ -130,7 +133,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     }
   }
 
-  void _applyMarkup(_AnnotTool tool) {
+  void _applyMarkup(ReaderAnnotTool tool) {
     final lines = _pdfKey.currentState?.getSelectedTextLines() ?? const [];
     if (lines.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -141,14 +144,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
     late final Annotation annotation;
     switch (tool) {
-      case _AnnotTool.highlight:
+      case ReaderAnnotTool.highlight:
         annotation = HighlightAnnotation(textBoundsCollection: lines);
-      case _AnnotTool.underline:
+      case ReaderAnnotTool.underline:
         annotation = UnderlineAnnotation(textBoundsCollection: lines);
-      case _AnnotTool.strikethrough:
+      case ReaderAnnotTool.strikethrough:
         annotation = StrikethroughAnnotation(textBoundsCollection: lines);
-      case _AnnotTool.none:
-      case _AnnotTool.pen:
+      case ReaderAnnotTool.none:
+      case ReaderAnnotTool.pen:
         return;
     }
     annotation.color = _markupColor;
@@ -215,15 +218,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           );
         }
       case 'Highlight':
-        _applyMarkup(_AnnotTool.highlight);
+        _applyMarkup(ReaderAnnotTool.highlight);
       case 'Underline':
-        _applyMarkup(_AnnotTool.underline);
+        _applyMarkup(ReaderAnnotTool.underline);
       case 'Strikethrough':
-        _applyMarkup(_AnnotTool.strikethrough);
+        _applyMarkup(ReaderAnnotTool.strikethrough);
       case 'Squiggly':
         _applySquiggly();
-      case 'Edit':
-        await _editTextInPlace();
     }
   }
 
@@ -288,53 +289,11 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   Future<void> _showBookmarksSheet() async {
     final lib = ref.read(libraryServiceProvider);
-    final bookmarks = lib.bookmarks(widget.document.id);
-    await showModalBottomSheet<void>(
+    await showReaderBookmarksSheet(
       context: context,
-      builder: (ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Bookmarks',
-                    style: Theme.of(ctx).textTheme.titleLarge,
-                  ),
-                ),
-              ),
-              if (bookmarks.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text('No page bookmarks yet for this file.'),
-                )
-              else
-                ...bookmarks.map(
-                  (b) => ListTile(
-                    leading: const Icon(PhosphorIconsRegular.bookmarkSimple),
-                    title: Text('Page ${b.pageNumber}'),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _controller.jumpToPage(b.pageNumber);
-                    },
-                  ),
-                ),
-              ListTile(
-                leading: const Icon(PhosphorIconsRegular.listBullets),
-                title: const Text('Document outline'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _pdfKey.currentState?.openBookmarkView();
-                },
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+      bookmarks: lib.bookmarks(widget.document.id),
+      onJumpToPage: _controller.jumpToPage,
+      onOpenOutline: () => _pdfKey.currentState?.openBookmarkView(),
     );
   }
 
@@ -382,32 +341,45 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     });
   }
 
-  Future<void> _openCanvasEdit() async {
+  Future<void> _openAddText() async {
     _removeSelectionMenu();
     final isPro = await requirePro(
       context,
       ref,
-      featureLabel: 'PDF text editing is part of Folio Pro.',
+      featureLabel: 'Adding text to a PDF is part of Folio Pro.',
     );
     if (!isPro || !mounted) return;
 
-    final item = await Navigator.of(context).push<PdfDocumentItem>(
-      MaterialPageRoute(
-        builder: (_) => PdfCanvasEditScreen(
-          document: widget.document,
-          initialPageIndex: math.max(0, _currentPage - 1),
-        ),
-      ),
-    );
-    if (item == null || !mounted) return;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => ReaderScreen(document: item)),
-    );
-  }
+    setState(() => _suspendViewer = true);
+    await WidgetsBinding.instance.endOfFrame;
+    // Give Android PdfRenderer time to release the reader document.
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (!mounted) return;
 
-  Future<void> _editTextInPlace() async {
-    // Prefer Canva-style editor (sticky font sizes, deferred save).
-    await _openCanvasEdit();
+    try {
+      final item = await Navigator.of(context).push<PdfDocumentItem>(
+        MaterialPageRoute(
+          builder: (_) => PdfCanvasEditScreen(
+            document: widget.document,
+            initialPageIndex: math.max(0, _currentPage - 1),
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (item != null) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => ReaderScreen(document: item)),
+        );
+        return;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open editor: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _suspendViewer = false);
+    }
   }
 
   Future<void> _promptForPassword({required bool wrongPassword}) async {
@@ -439,107 +411,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   }
 
   void _showAnnotSheet() {
-    showModalBottomSheet<void>(
+    showReaderAnnotSheet(
       context: context,
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Markup', style: Theme.of(ctx).textTheme.titleLarge),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    ActionChip(
-                      label: const Text('Highlight'),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        setState(() => _tool = _AnnotTool.highlight);
-                        _applyMarkup(_AnnotTool.highlight);
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('Underline'),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        setState(() => _tool = _AnnotTool.underline);
-                        _applyMarkup(_AnnotTool.underline);
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('Strike'),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        setState(() => _tool = _AnnotTool.strikethrough);
-                        _applyMarkup(_AnnotTool.strikethrough);
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('Squiggly'),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _applySquiggly();
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('Note'),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _addStickyNote();
-                      },
-                    ),
-                    ActionChip(
-                      label: Text(_tool == _AnnotTool.pen ? 'Exit pen' : 'Pen'),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        setState(() {
-                          _tool = _tool == _AnnotTool.pen
-                              ? _AnnotTool.none
-                              : _AnnotTool.pen;
-                        });
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text('Highlight color', style: Theme.of(ctx).textTheme.bodySmall),
-                const SizedBox(height: 8),
-                Row(
-                  children: AppConstants.highlightColors.map((value) {
-                    final color = Color(value);
-                    final selected = color.toARGB32() == _markupColor.toARGB32();
-                    return GestureDetector(
-                      onTap: () {
-                        setState(() => _markupColor = color);
-                        Navigator.pop(ctx);
-                      },
-                      child: Container(
-                        width: 28,
-                        height: 28,
-                        margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: selected
-                                ? Theme.of(ctx).colorScheme.primary
-                                : Theme.of(ctx).colorScheme.outline,
-                            width: selected ? 2 : 1,
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ],
-            ),
-          ),
-        );
+      currentTool: _tool,
+      markupColor: _markupColor,
+      onSelectTool: (tool) {
+        setState(() => _tool = tool);
+        if (tool == ReaderAnnotTool.highlight ||
+            tool == ReaderAnnotTool.underline ||
+            tool == ReaderAnnotTool.strikethrough) {
+          _applyMarkup(tool);
+        }
       },
+      onSelectColor: (color) => setState(() => _markupColor = color),
+      onSquiggly: _applySquiggly,
+      onStickyNote: _addStickyNote,
     );
   }
 
@@ -632,19 +518,20 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       ),
     );
 
-    if (_nightMode) {
-      viewer = ColorFiltered(
-        colorFilter: const ColorFilter.matrix(<double>[
-          -1, 0, 0, 0, 255,
-          0, -1, 0, 0, 255,
-          0, 0, -1, 0, 255,
-          0, 0, 0, 1, 0,
-        ]),
-        child: viewer,
-      );
-    }
+    // Night mode inverts every color (blue → yellow), so it is disabled.
+    // if (_nightMode) {
+    //   viewer = ColorFiltered(
+    //     colorFilter: const ColorFilter.matrix(<double>[
+    //       -1, 0, 0, 0, 255,
+    //       0, -1, 0, 0, 255,
+    //       0, 0, -1, 0, 255,
+    //       0, 0, 0, 1, 0,
+    //     ]),
+    //     child: viewer,
+    //   );
+    // }
 
-    if (_tool == _AnnotTool.pen) {
+    if (_tool == ReaderAnnotTool.pen) {
       viewer = Stack(
         fit: StackFit.expand,
         children: [
@@ -724,11 +611,11 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                   await _toggleBookmark();
                 case 'bookmarks':
                   await _showBookmarksSheet();
-                case 'night':
-                  setState(() => _nightMode = !_nightMode);
-                  await ref
-                      .read(settingsProvider.notifier)
-                      .setNightMode(_nightMode);
+                // case 'night':
+                //   setState(() => _nightMode = !_nightMode);
+                //   await ref
+                //       .read(settingsProvider.notifier)
+                //       .setNightMode(_nightMode);
                 case 'layout':
                   setState(() {
                     _layoutMode =
@@ -744,8 +631,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                       );
                 case 'tts':
                   await _toggleTts();
-                case 'edit':
-                  await _editTextInPlace();
+                case 'add_text':
+                  await _openAddText();
                 case 'share':
                   await ref
                       .read(libraryServiceProvider)
@@ -763,10 +650,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                 value: 'bookmarks',
                 child: Text('All bookmarks / outline'),
               ),
-              PopupMenuItem(
-                value: 'night',
-                child: Text(_nightMode ? 'Exit night mode' : 'Night mode'),
-              ),
+              // PopupMenuItem(
+              //   value: 'night',
+              //   child: Text(_nightMode ? 'Exit night mode' : 'Night mode'),
+              // ),
               PopupMenuItem(
                 value: 'layout',
                 child: Text(
@@ -780,8 +667,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                 child: Text(_ttsPlaying ? 'Stop reading aloud' : 'Read aloud'),
               ),
               const PopupMenuItem(
-                value: 'edit',
-                child: Text('Edit PDF text'),
+                value: 'add_text',
+                child: Text('Add text'),
               ),
               const PopupMenuItem(
                 value: 'share',
@@ -791,41 +678,20 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           ),
         ],
         bottom: _searching
-            ? PreferredSize(
-                preferredSize: const Size.fromHeight(56),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _searchController,
-                          decoration: const InputDecoration(
-                            hintText: 'Find in document',
-                            isDense: true,
-                          ),
-                          onSubmitted: _runSearch,
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => _runSearch(_searchController.text),
-                        icon: const Icon(PhosphorIconsRegular.magnifyingGlass),
-                      ),
-                      IconButton(
-                        onPressed: () => _searchResult?.previousInstance(),
-                        icon: const Icon(PhosphorIconsRegular.caretUp),
-                      ),
-                      IconButton(
-                        onPressed: () => _searchResult?.nextInstance(),
-                        icon: const Icon(PhosphorIconsRegular.caretDown),
-                      ),
-                    ],
-                  ),
-                ),
+            ? ReaderSearchBar(
+                controller: _searchController,
+                onSubmitted: _runSearch,
+                onPrevious: () => _searchResult?.previousInstance(),
+                onNext: () => _searchResult?.nextInstance(),
               )
             : null,
       ),
-      body: viewer,
+      body: SafeArea(
+        top: false,
+        child: _suspendViewer
+            ? const Center(child: CircularProgressIndicator())
+            : viewer,
+      ),
     );
   }
 }

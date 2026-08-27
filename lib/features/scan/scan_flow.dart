@@ -9,49 +9,58 @@ Future<void> startScanFlow(BuildContext context, WidgetRef ref) async {
   if (!scan.isSupported) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Scanning works on Android and iOS devices.'),
+        content: Text(
+          'Document scanning is available on Android. Google\'s scanner is not available on iOS yet.',
+        ),
       ),
     );
     return;
   }
 
-  final runOcr = await showModalBottomSheet<bool>(
-    context: context,
-    builder: (ctx) {
-      return SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'Scan to PDF',
-                style: Theme.of(ctx).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Capture one or more pages. OCR makes the result searchable, but takes a little longer.',
-                style: Theme.of(ctx).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Scan with OCR'),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Scan without OCR'),
-              ),
-            ],
+  final bool useOcr;
+  if (!scan.ocrSupported) {
+    useOcr = false;
+  } else {
+    final choice = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Scan to PDF',
+                  style: Theme.of(ctx).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Capture one or more pages. OCR makes the result searchable, but takes a little longer.',
+                  style: Theme.of(ctx).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Scan with OCR'),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Scan without OCR'),
+                ),
+              ],
+            ),
           ),
-        ),
-      );
-    },
-  );
+        );
+      },
+    );
+    if (choice == null || !context.mounted) return;
+    useOcr = choice;
+  }
 
-  if (runOcr == null || !context.mounted) return;
+  if (!context.mounted) return;
 
   showDialog<void>(
     context: context,
@@ -66,7 +75,7 @@ Future<void> startScanFlow(BuildContext context, WidgetRef ref) async {
               const CircularProgressIndicator(),
               const SizedBox(height: 16),
               Text(
-                runOcr
+                useOcr
                     ? 'Scanning and reading text…'
                     : 'Building your PDF…',
               ),
@@ -78,7 +87,7 @@ Future<void> startScanFlow(BuildContext context, WidgetRef ref) async {
   );
 
   try {
-    final result = await scan.scanToPdf(runOcr: runOcr);
+    final result = await scan.scanToPdf(runOcr: useOcr);
     if (!context.mounted) return;
     Navigator.of(context).pop(); // loading
 

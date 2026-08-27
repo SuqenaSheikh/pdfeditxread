@@ -30,6 +30,26 @@ class RecentScreen extends ConsumerWidget {
     // await ref.read(adsServiceProvider).showInterstitialAtBreakpoint();
   }
 
+  Future<void> _download(
+    BuildContext context,
+    WidgetRef ref,
+    PdfDocumentItem doc,
+  ) async {
+    try {
+      final saved =
+          await ref.read(libraryServiceProvider).downloadToDevice(doc);
+      if (!context.mounted || !saved) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PDF saved to your device.')),
+      );
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not download this PDF.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final recents = ref.watch(recentDocumentsProvider);
@@ -64,6 +84,7 @@ class RecentScreen extends ConsumerWidget {
                       ref.read(libraryProvider.notifier).toggleFavorite(doc),
                   onShare: () =>
                       ref.read(libraryServiceProvider).share(doc),
+                  onDownload: () => _download(context, ref, doc),
                   onDelete: () =>
                       ref.read(libraryProvider.notifier).remove(doc),
                 );

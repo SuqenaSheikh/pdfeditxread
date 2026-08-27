@@ -71,6 +71,22 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     }
   }
 
+  Future<void> _download(PdfDocumentItem doc) async {
+    try {
+      final saved =
+          await ref.read(libraryServiceProvider).downloadToDevice(doc);
+      if (!mounted || !saved) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PDF saved to your device.')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not download this PDF.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final docs = ref.watch(libraryProvider);
@@ -85,11 +101,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       appBar: AppBar(
         title: const Text(AppConstants.appName),
         actions: [
-          IconButton(
-            tooltip: 'Scan document',
-            onPressed: () => startScanFlow(context, ref),
-            icon: const Icon(PhosphorIconsRegular.scan),
-          ),
+          if (ref.watch(scanServiceProvider).isSupported)
+            IconButton(
+              tooltip: 'Scan document',
+              onPressed: () => startScanFlow(context, ref),
+              icon: const Icon(PhosphorIconsRegular.scan),
+            ),
           const SizedBox(width: 4),
         ],
       ),
@@ -151,6 +168,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                               onShare: () => ref
                                   .read(libraryServiceProvider)
                                   .share(doc),
+                              onDownload: () => _download(doc),
                               onDelete: () => ref
                                   .read(libraryProvider.notifier)
                                   .remove(doc),
@@ -176,6 +194,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                                 .toggleFavorite(doc),
                             onShare: () =>
                                 ref.read(libraryServiceProvider).share(doc),
+                            onDownload: () => _download(doc),
                             onDelete: () => ref
                                 .read(libraryProvider.notifier)
                                 .remove(doc),

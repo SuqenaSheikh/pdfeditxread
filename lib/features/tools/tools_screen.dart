@@ -30,12 +30,13 @@ class ToolsScreen extends ConsumerWidget {
                 ),
           ),
           const SizedBox(height: 16),
-          _ToolCard(
-            icon: PhosphorIconsRegular.scan,
-            title: 'Scan to PDF',
-            subtitle: 'Camera capture with crop and optional OCR',
-            onTap: () => startScanFlow(context, ref),
-          ),
+          if (ref.watch(scanServiceProvider).isSupported)
+            _ToolCard(
+              icon: PhosphorIconsRegular.scan,
+              title: 'Scan to PDF',
+              subtitle: 'Camera capture with crop and optional OCR',
+              onTap: () => startScanFlow(context, ref),
+            ),
           _ToolCard(
             icon: PhosphorIconsRegular.files,
             title: 'Merge PDFs',
@@ -57,7 +58,7 @@ class ToolsScreen extends ConsumerWidget {
           _ToolCard(
             icon: PhosphorIconsRegular.image,
             title: 'PDF to images',
-            subtitle: 'Export pages as PNG or JPEG',
+            subtitle: 'Save pages as PNG or JPEG in your gallery',
             onTap: () => runExportImagesFlow(context, ref),
           ),
           _ToolCard(
@@ -92,21 +93,22 @@ class ToolsScreen extends ConsumerWidget {
               }
             },
           ),
-          _ToolCard(
-            icon: PhosphorIconsRegular.fileDoc,
-            title: 'Convert to Word',
-            subtitle: 'Coming soon',
-            muted: true,
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text(
-                    'Word conversion is on the roadmap. It needs a cloud service, so it is not in this release.',
-                  ),
-                ),
-              );
-            },
-          ),
+          // FR-21 (PDF → Word): deferred — needs a cloud conversion API, not in V1.
+          // _ToolCard(
+          //   icon: PhosphorIconsRegular.fileDoc,
+          //   title: 'Convert to Word',
+          //   subtitle: 'Coming soon',
+          //   muted: true,
+          //   onTap: () {
+          //     ScaffoldMessenger.of(context).showSnackBar(
+          //       const SnackBar(
+          //         content: Text(
+          //           'Word conversion is on the roadmap. It needs a cloud service, so it is not in this release.',
+          //         ),
+          //       ),
+          //     );
+          //   },
+          // ),
         ],
       ),
     );

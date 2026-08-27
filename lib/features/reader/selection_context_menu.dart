@@ -37,11 +37,6 @@ class SelectionContextMenu extends StatelessWidget {
         label: 'Squiggly',
         icon: PhosphorIconsRegular.waveSine
       ),
-      (
-        id: 'Edit',
-        label: 'Edit PDF',
-        icon: PhosphorIconsRegular.pencilSimple
-      ),
     ];
 
     return Material(

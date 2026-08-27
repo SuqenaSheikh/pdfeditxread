@@ -24,13 +24,15 @@ class ScanService {
 
   final PdfOpsService _pdfOps;
 
-  bool get isSupported =>
-      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  bool get isSupported => !kIsWeb && Platform.isAndroid;
+
+  /// OCR runs after the Android document scanner. It is not offered on iOS.
+  bool get ocrSupported => isSupported;
 
   Future<ScanResult?> scanToPdf({bool runOcr = true}) async {
     if (!isSupported) {
       throw UnsupportedError(
-        'Document scanning is available on Android and iOS.',
+        'Document scanning is available on Android. Google\'s scanner is not available on iOS yet.',
       );
     }
 

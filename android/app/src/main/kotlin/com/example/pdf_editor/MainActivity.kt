@@ -1,12 +1,17 @@
 package com.example.pdf_editor
 
+import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 class MainActivity : FlutterActivity() {
@@ -26,6 +31,17 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "folio/save_images")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "saveImages") {
+                    val paths = (call.arguments as? Map<*, *>)?.get("paths") as? List<*>
+                    val files = paths?.mapNotNull { it as? String } ?: emptyList()
+                    result.success(saveImagesToGallery(files))
+                } else {
+                    result.notImplemented()
+                }
+            }
         handleIntent(intent)
     }
 
@@ -71,5 +87,50 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {
             null
         }
+    }
+
+    /// Writes images into Pictures/Folio via MediaStore. No storage permission
+    /// is required on Android 10+ (API 29).
+    private fun saveImagesToGallery(paths: List<String>): Int {
+        var saved = 0
+        for (path in paths) {
+            val file = File(path)
+            if (!file.exists()) continue
+            val mime = if (path.lowercase().endsWith(".png")) "image/png" else "image/jpeg"
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, file.name)
+                put(MediaStore.Images.Media.MIME_TYPE, mime)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(
+                        MediaStore.Images.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_PICTURES + "/Folio",
+                    )
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            val uri = contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                values,
+            ) ?: continue
+            try {
+                val stream = contentResolver.openOutputStream(uri)
+                if (stream == null) {
+                    contentResolver.delete(uri, null, null)
+                    continue
+                }
+                stream.use { output ->
+                    FileInputStream(file).use { input -> input.copyTo(output) }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.clear()
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+                }
+                saved += 1
+            } catch (_: Exception) {
+                contentResolver.delete(uri, null, null)
+            }
+        }
+        return saved
     }
 }

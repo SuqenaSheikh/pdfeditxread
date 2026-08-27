@@ -112,8 +112,8 @@ class _ProPaywallScreenState extends ConsumerState<ProPaywallScreen> {
           ),
           const _Perk(
             icon: PhosphorIconsRegular.cursorText,
-            title: 'In-place text editing',
-            subtitle: 'Fix a name, date, or figure and save it into the PDF.',
+            title: 'Add text to PDFs',
+            subtitle: 'Place new text on a page and save it into the file.',
           ),
           const _Perk(
             icon: PhosphorIconsRegular.trash,
