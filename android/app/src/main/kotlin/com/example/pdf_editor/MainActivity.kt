@@ -42,6 +42,29 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "folio/iap")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "openManageSubscriptions") {
+                    val sku = (call.arguments as? Map<*, *>)?.get("sku") as? String
+                    val uri = if (!sku.isNullOrEmpty()) {
+                        Uri.parse(
+                            "https://play.google.com/store/account/subscriptions" +
+                                "?sku=$sku&package=$packageName",
+                        )
+                    } else {
+                        Uri.parse("https://play.google.com/store/account/subscriptions")
+                    }
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, uri))
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("UNAVAILABLE", e.message, null)
+                    }
+                } else {
+                    result.notImplemented()
+                }
+            }
         handleIntent(intent)
     }
 

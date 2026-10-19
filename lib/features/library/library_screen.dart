@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:phosphor_flutter/phosphor_flutter.dart';
 
 import '../../core/constants/app_constants.dart';
-import '../../core/widgets/ad_banner_slot.dart';
 import '../../core/widgets/document_tile.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../data/models/pdf_document_item.dart';
@@ -133,7 +132,6 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ),
             ),
           ),
-          const AdBannerSlot(), // TODO(ads): temporarily inactive until AdsService.init is re-enabled
           Expanded(
             child: filtered.isEmpty
                 ? EmptyState(

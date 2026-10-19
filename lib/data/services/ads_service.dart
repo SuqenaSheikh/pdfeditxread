@@ -1,3 +1,4 @@
+/*
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -38,7 +39,7 @@ class AdsService {
     }
   }
 
-  bool get showAds => !_isPro && _initialized;
+  bool get showAds => _initialized && !_isPro && false;
 
   BannerAd? createLibraryBanner({
     required void Function(Ad) onLoaded,
@@ -141,3 +142,4 @@ class AdsService {
 
   void markFirstLaunchDone() => _firstLaunch = false;
 }
+*/

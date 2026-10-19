@@ -12,8 +12,16 @@ class AppConstants {
   static const String admobBannerUnitId = 'ca-app-pub-3940256099942544/6300978111';
   static const String admobInterstitialUnitId = 'ca-app-pub-3940256099942544/1033173712';
 
-  /// Play / App Store product id for the single Pro unlock.
-  static const String proProductId = 'folio_pro';
+  /// Play / App Store auto-renewing subscription product IDs.
+  /// Create these exact IDs in Play Console and App Store Connect.
+  static const String premiumMonthlyId = 'folio_premium_monthly';
+  static const String premiumYearlyId = 'folio_premium_yearly';
+  static const Set<String> premiumProductIds = {
+    premiumMonthlyId,
+    premiumYearlyId,
+  };
+  static const String premiumMonthlyPriceLabel = r'$9.99';
+  static const String premiumYearlyPriceLabel = r'$99.99';
 
   static const String hiveBoxSettings = 'settings';
   static const String hiveBoxLibrary = 'library';

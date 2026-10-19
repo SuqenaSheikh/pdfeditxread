@@ -36,9 +36,9 @@ final purchaseServiceProvider = Provider<PurchaseService>((ref) {
   throw UnimplementedError('purchaseServiceProvider must be overridden');
 });
 
-final adsServiceProvider = Provider<AdsService>((ref) {
+/*final adsServiceProvider = Provider<AdsService>((ref) {
   throw UnimplementedError('adsServiceProvider must be overridden');
-});
+});*/
 
 final settingsProvider =
     StateNotifierProvider<SettingsNotifier, AppSettings>((ref) {
@@ -62,7 +62,24 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   Future<void> completeOnboarding() =>
       update((s) => s.copyWith(hasCompletedOnboarding: true));
 
-  Future<void> setPro(bool value) => update((s) => s.copyWith(isPro: value));
+  Future<void> setPro({
+    bool? value,
+    String? subscriptionProductId,
+    int? subscriptionExpiresAtMillis,
+    bool clearSubscription = false,
+  }) =>
+      update(
+        (s) => s.copyWith(
+          isPro: value,
+          subscriptionProductId: subscriptionProductId,
+          subscriptionExpiresAtMillis: subscriptionExpiresAtMillis,
+          clearSubscription: clearSubscription,
+        ),
+      );
+
+  Future<void> reload() async {
+    state = _repo.read();
+  }
 
   Future<void> setReaderLayout(ReaderLayoutMode mode) =>
       update((s) => s.copyWith(readerLayout: mode));

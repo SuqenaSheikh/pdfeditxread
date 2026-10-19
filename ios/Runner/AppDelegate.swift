@@ -26,6 +26,31 @@ import UIKit
       }
     }
 
+    if let registrar = self.registrar(forPlugin: "FolioIap") {
+      let channel = FlutterMethodChannel(
+        name: "folio/iap",
+        binaryMessenger: registrar.messenger()
+      )
+      channel.setMethodCallHandler { call, result in
+        if call.method == "openManageSubscriptions" {
+          if let url = URL(string: "https://apps.apple.com/account/subscriptions") {
+            UIApplication.shared.open(url)
+            result(nil)
+          } else {
+            result(
+              FlutterError(
+                code: "UNAVAILABLE",
+                message: "Could not open App Store subscriptions.",
+                details: nil
+              )
+            )
+          }
+        } else {
+          result(FlutterMethodNotImplemented)
+        }
+      }
+    }
+
     return ok
   }
 

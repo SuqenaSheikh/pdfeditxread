@@ -29,7 +29,7 @@ Future<void> main() async {
   await Hive.initFlutter();
   final settingsRepo = await SettingsRepository.open();
   final libraryRepo = await LibraryRepository.open();
-//
+
   final purchaseService = PurchaseService(settingsRepo);
   await purchaseService.init();
 
@@ -37,8 +37,8 @@ Future<void> main() async {
   settings = settings.copyWith(launchCount: settings.launchCount + 1);
   await settingsRepo.save(settings);
 
-  final adsService = AdsService();
-  // TODO(ads): re-enable AdMob init / app-open ads later.
+  //final adsService = AdsService();
+  // Ads are off for now. Re-enable AdMob init / app-open ads later.
   // await adsService.init(
   //   isPro: settings.isPro,
   //   firstLaunch: settings.launchCount <= 1,
@@ -47,14 +47,14 @@ Future<void> main() async {
   //   adsService.showAppOpenIfAllowed();
   // }
   // adsService.markFirstLaunchDone();
-///
+
   runApp(
     ProviderScope(
       overrides: [
         settingsRepositoryProvider.overrideWithValue(settingsRepo),
         libraryRepositoryProvider.overrideWithValue(libraryRepo),
         purchaseServiceProvider.overrideWithValue(purchaseService),
-        adsServiceProvider.overrideWithValue(adsService),
+       // adsServiceProvider.overrideWithValue(adsService),
       ],
       child: const FolioApp(),
     ),

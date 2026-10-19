@@ -93,46 +93,16 @@ class SettingsScreen extends ConsumerWidget {
                   title: Text(settings.isPro ? 'Pro is active' : 'Upgrade to Pro'),
                   subtitle: Text(
                     settings.isPro
-                        ? 'Ads are off. TTS, add text, delete, and lock are yours.'
-                        : 'Unlock Pro features and remove every ad.',
+                        ? '${settings.planLabel} · ${settings.remainingLabel()}'
+                        : 'TTS, add text, delete pages, and password lock.',
                   ),
-                  trailing: settings.isPro
-                      ? null
-                      : const Icon(PhosphorIconsRegular.caretRight),
-                  onTap: settings.isPro
-                      ? null
-                      : () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const ProPaywallScreen(),
-                            ),
-                          ),
+                  trailing: const Icon(PhosphorIconsRegular.caretRight),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const ProPaywallScreen(),
+                    ),
+                  ),
                 ),
-                if (!settings.isPro)
-                  TextButton(
-                    onPressed: () async {
-                      await ref.read(purchaseServiceProvider).restore();
-                      final pro = ref
-                          .read(purchaseServiceProvider)
-                          .readSettings()
-                          .isPro;
-                      if (pro) {
-                        await ref.read(settingsProvider.notifier).setPro(true);
-                        ref.read(adsServiceProvider).setPro(true);
-                      }
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              pro
-                                  ? 'Pro restored.'
-                                  : 'No purchase found to restore.',
-                            ),
-                          ),
-                        );
-                      }
-                    },
-                    child: const Text('Restore purchases'),
-                  ),
               ],
             ),
           ),
